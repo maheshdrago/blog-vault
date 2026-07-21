@@ -1,0 +1,104 @@
+<!--
+title: What Actually Happens When an LLM Calls an MCP Tool
+slug: what-happens-when-an-llm-calls-an-mcp-tool
+date: 2026-07-20
+description: Follow one MCP tool call from capability negotiation through schema validation, execution, and a reviewable result.
+tags: mcp, protocols, systems, ai
+cover: /assets/architecture-cover.png
+experience: /experiences/what-happens-when-an-llm-calls-an-mcp-tool.txt
+featured: true
+-->
+<p>A tool call looks almost trivial from the chat window. You ask an assistant to publish a draft, a spinner turns, and a link appears. The visible action may take two seconds. Underneath it, several systems have to agree on a protocol version, discover a contract, validate an argument, authorize a side effect, execute code, and return evidence that can be matched to the original request.</p>
+
+<p>Model Context Protocol, or MCP, gives those systems a common language. It does not make the model the server, and it does not turn every function into an autonomous action. The useful mental model is a chain of explicit boundaries: the AI application chooses an available tool, an MCP client speaks JSON-RPC to an MCP server, and the server invokes ordinary application code.</p>
+
+<p>Following one request through those boundaries explains both why MCP is useful and where production systems still need careful engineering.</p>
+
+<h2>The call begins before the call</h2>
+
+<p>An MCP session starts with initialization, not with a tool. The client sends an <code>initialize</code> request that includes the protocol version it supports, its capabilities, and identifying information. The server answers with its chosen version and capabilities. The client then sends an <code>initialized</code> notification. Only after that exchange does normal operation begin.</p>
+
+<p>This negotiation matters because MCP evolves. A client should not assume that every connected server understands every feature. Capabilities make support explicit: a server can announce tools, resources, prompts, or optional behavior, while the client can advertise what it knows how to receive. The current specification describes this lifecycle as initialization, operation, and shutdown. For Streamable HTTP, requests after initialization also carry an <code>MCP-Protocol-Version</code> header so the negotiated contract remains visible at the transport boundary. <a href="https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle">The MCP lifecycle specification</a> defines that sequence.</p>
+
+<p>Initialization is therefore less like opening a raw socket and more like two colleagues agreeing on a vocabulary before starting work. If they cannot agree on a compatible version, the correct outcome is an early, legible failure—not a best-effort tool call with ambiguous semantics.</p>
+
+<h2>Discovery turns code into a contract</h2>
+
+<p>Once the session is ready, the client can ask for <code>tools/list</code>. Each tool definition has a name, a human-readable description, and an input schema. It can also describe structured output. The application exposes this catalog to the model, usually alongside instructions and the user’s request. The model then chooses whether a tool is relevant and proposes arguments that fit its schema.</p>
+
+<p>In the official Python SDK, FastMCP can derive that contract from an annotated Python function. A parameter typed as <code>str</code>, a Pydantic model, and a docstring become material for the published tool schema. When the tool is called, the framework can validate the incoming JSON before the function body runs. That reduces duplicate glue code, but the schema is still an interface—not proof that an action is wise. The <a href="https://github.com/modelcontextprotocol/python-sdk">official MCP Python SDK</a> documents the mapping from type annotations to validation and structured output.</p>
+
+<p>This distinction is easy to miss. A schema can prove that <code>slug</code> is a lowercase string and that <code>researchSources</code> contains at least three records. It cannot prove that the article is original, that a cited page supports a particular sentence, or that publishing is appropriate. Structural validation belongs near the protocol boundary; semantic validation and policy belong in the application.</p>
+
+<h2>The request crosses three envelopes</h2>
+
+<p>Suppose the model selects a tool named <code>create_interactive_post_pull_request</code>. The MCP client wraps the arguments in a JSON-RPC request. A simplified message looks like this:</p>
+
+<pre><code>{
+  "jsonrpc": "2.0",
+  "id": 42,
+  "method": "tools/call",
+  "params": {
+    "name": "create_interactive_post_pull_request",
+    "arguments": { "post": { "slug": "..." } }
+  }
+}</code></pre>
+
+<p>That is the protocol envelope. The <code>id</code> lets the client correlate a later response with this request. JSON-RPC also defines notifications, which deliberately omit an ID and receive no response, and requires a response to contain either a <code>result</code> or an <code>error</code>. Those rules come from the <a href="https://www.jsonrpc.org/specification">JSON-RPC 2.0 specification</a>; MCP gives the methods and payloads domain-specific meaning.</p>
+
+<p>The protocol message then travels inside a transport envelope. With Streamable HTTP, each client message is sent as a new HTTP POST. The client advertises that it can accept JSON and server-sent events; the server may answer with a single JSON response or an event stream. HTTP supplies routing, headers, authentication hooks, status codes, proxies, and operational tooling. It does not replace JSON-RPC: an HTTP 200 can still carry a tool-level failure, while an authorization middleware can reject the request before JSON-RPC dispatch.</p>
+
+<p>Finally, there is the application envelope: the validated <code>post</code> object passed to Blog Vault’s publication function. Keeping these layers separate makes failures easier to reason about. HTTP says whether a network request was accepted and processed; JSON-RPC says whether the remote method was understood; the tool result says whether the requested work succeeded.</p>
+
+<h2>Validation and authorization are different gates</h2>
+
+<p>The server should validate arguments before business logic. Missing required fields, an invalid URL, or a malformed slug are client mistakes and should produce precise feedback. Validation protects code from accidental ambiguity and gives the model a chance to repair its request.</p>
+
+<p>Authorization answers a different question: even if the request is perfectly shaped, is this caller allowed to perform it? A production server might authenticate the MCP connection with a bearer token, restrict a tool to selected users, apply rate limits, or require confirmation for sensitive operations. MCP’s tools specification explicitly recommends input validation, access control, output sanitization, timeouts, and audit logging. It also asks clients to keep a human in the loop for consequential calls.</p>
+
+<p>Putting authorization inside a prompt is not enough. Instructions influence model behavior, but a prompt is not a security boundary. The server must enforce permission independently. Blog Vault does that in two ways: its MCP route requires a bearer credential, and its write tool can open a pull request but cannot merge it. The capability itself is intentionally narrower than “publish arbitrary content.”</p>
+
+<p>Errors should preserve the same separation. A malformed JSON-RPC request is a protocol error. Well-formed arguments rejected by a Pydantic model are validation errors. A GitHub permission failure or conflicting branch is an execution error. Reporting the category without leaking secrets lets the client decide whether to repair, retry, ask a human, or stop.</p>
+
+<h2>Execution is ordinary application code</h2>
+
+<p>After dispatch and validation, there is no special “LLM runtime” inside the tool. The server runs a Python function. In this project, that function transforms the validated draft into a sanitized Reading document and a sandboxed interactive document, asks GitHub for the base branch, creates a new branch, commits both files, and opens a pull request with the research record attached.</p>
+
+<p>This is a useful architectural property. The same repository layer can be unit-tested without a model. Its GitHub requests can be traced. Its input model can be fuzzed. Its permissions can be reviewed like any other API. MCP is the adapter that makes those capabilities discoverable to an AI application; it does not erase the need for conventional software design.</p>
+
+<p>Side effects also change retry strategy. If a client loses its connection after sending a request, it cannot safely conclude that execution never happened. The Streamable HTTP specification notes that disconnection is not cancellation. A robust write tool should therefore have an idempotency strategy: a caller-provided operation key, a deterministic lookup, or a preflight check for the intended artifact. Blindly replaying “create a pull request” can produce duplicates.</p>
+
+<p>Timeouts have similar nuance. A client timeout protects the user experience, but terminating the wait does not automatically roll back a remote commit. Cancellation, compensation, and cleanup are application responsibilities. For long work, progress notifications can make the state visible, but the final result still needs a durable identity.</p>
+
+<h2>A result should be evidence, not reassurance</h2>
+
+<p>When execution finishes, the server returns a tool result through JSON-RPC. For this publication tool, the useful result is small and verifiable: pull-request number, URL, branch, and status. “Done” would be a poor response because the user cannot inspect it, and the client cannot reliably use it in a later step.</p>
+
+<p>Structured results help here. They let the MCP client validate output and let the application present a link or feed the pull-request number into a status tool without scraping prose. The model may summarize the outcome conversationally, but the durable record remains GitHub’s branch and pull request.</p>
+
+<p>That review boundary is part of the product, not ceremony added after the automation. The model can gather sources, draft, and submit. CI can validate file shape and build the site. A person can inspect factual claims, visual behavior, and the diff before merge. Each participant does the work it is best positioned to do.</p>
+
+<h2>A practical mental model</h2>
+
+<p>Think of one MCP tool call as six checkpoints:</p>
+
+<ol>
+  <li><strong>Negotiate:</strong> agree on a protocol version and capabilities.</li>
+  <li><strong>Discover:</strong> obtain a named tool and its machine-readable schema.</li>
+  <li><strong>Frame:</strong> correlate a JSON-RPC request and carry it over a transport.</li>
+  <li><strong>Guard:</strong> validate shape, authenticate the caller, and authorize the action.</li>
+  <li><strong>Execute:</strong> run ordinary, testable application code with explicit side effects.</li>
+  <li><strong>Prove:</strong> return structured evidence and preserve human review where consequences warrant it.</li>
+</ol>
+
+<p>When an integration feels mysterious, locate the failing checkpoint before changing code. A tool absent from the catalog is a discovery problem. A rejected slug is validation. A 401 is authentication. A duplicated pull request is idempotency. A vague “success” is an output-contract problem. MCP makes the path consistent; good boundaries make it trustworthy.</p>
+
+<h2>Sources</h2>
+
+<ul>
+  <li><a href="https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle">Model Context Protocol: Lifecycle</a> and <a href="https://modelcontextprotocol.io/specification/2025-11-25/basic/transports">Transports</a></li>
+  <li><a href="https://modelcontextprotocol.io/specification/2025-11-25/server/tools">Model Context Protocol: Tools</a></li>
+  <li><a href="https://www.jsonrpc.org/specification">JSON-RPC 2.0 Specification</a></li>
+  <li><a href="https://www.rfc-editor.org/rfc/rfc9110.html">RFC 9110: HTTP Semantics</a></li>
+  <li><a href="https://github.com/modelcontextprotocol/python-sdk">Model Context Protocol Python SDK</a></li>
+</ul>
