@@ -1,25 +1,24 @@
-# Fieldnotes / Blog Vault
+# Blog Vault
 
-An HTML-first personal blog with Git as the content database, React on Vercel, and a private FastAPI + MCP authoring service on Render.
+A personal publishing system with a React reader, FastAPI REST API, private MCP
+authoring server, Supabase PostgreSQL storage, and Langfuse tracing.
 
 ## Architecture
 
 ```text
-posts/published/*.html ── GitHub ── Vercel build ── static reader
-                              ▲
-                              │ branch + pull request
-LLM ── authenticated MCP ── Render/FastAPI
+React / Vercel ── REST reads ─────────────┐
+                                          ▼
+LLM ── authenticated MCP ── FastAPI ── Supabase PostgreSQL
+             │                    │         ├─ working articles + safe snapshots
+             │                    │         └─ preferences + reading state
+             └─ creates drafts ───┘
 
-Browser preferences ── FastAPI ── Supabase PostgreSQL
+Human reviewer ── review dashboard ── comments / approves / publishes
 ```
 
-Blog content and user state deliberately use different persistence:
-
-- Git stores versioned HTML posts and images.
-- PostgreSQL stores reader preferences, favorites, bookmarks, progress, and
-  personal post groups.
-- Render's filesystem is never treated as durable storage.
-- MCP can create a branch and pull request. It cannot merge or delete content.
+Git stores application code and database migrations. Article bodies, interactive
+documents, metadata, research records, drafts, and rollback snapshots live in
+Supabase. Render's filesystem is not used as durable storage.
 
 ## Local development
 
@@ -29,204 +28,187 @@ Requirements: Node.js 22+, Python 3.12+, and `uv`.
 npm install
 uv sync
 cp .env.example .env
+uv run alembic upgrade head
 ```
 
-Set a PostgreSQL connection, GitHub credentials, and MCP access token in `.env`, then run:
+Run the services in separate terminals:
 
 ```bash
-uv run alembic upgrade head
 uv run uvicorn backend.app.main:app --reload --port 8000
 npm run dev
 ```
 
-The frontend is at `http://localhost:5173`, REST documentation is at `http://localhost:8000/docs`, and MCP Streamable HTTP is at `http://localhost:8000/mcp/`.
+- Frontend: `http://localhost:5173`
+- REST/OpenAPI: `http://localhost:8000/docs`
+- MCP Streamable HTTP: `http://localhost:8000/mcp/`
 
-The frontend uses `VITE_API_URL`, defaulting locally to `http://localhost:8000/api/v1`.
+The frontend uses `VITE_API_URL`, which defaults to
+`http://localhost:8000/api/v1`.
 
-## Posts
+## Article storage and publication
 
-Published posts are semantic HTML files under `posts/published`. `npm run content:build` validates their metadata and produces `public/content/posts.json`; the Vercel build runs this automatically.
+`articles` holds each stable slug and its one current working copy:
 
-Each file contains metadata followed by an HTML **fragment**, not a complete page.
-React owns the application shell and route for every post. The unified in-app
-reader keeps progress, bookmarks, favorites, groups, typography,
-previous/next navigation, and the generated table of contents available for
-imported and hand-written articles alike.
+- title, date, UI summary, tags, cover, and featured state;
+- sanitized semantic Reading HTML;
+- optional sandboxed interactive HTML;
+- research sources and revision notes;
+- draft, review, approved, published, or archived workflow status.
 
-Standalone HTML pages can be normalized into the same safe article format with:
+`article_snapshots` holds at most one previous published copy per article. Before
+MCP edits a published article, the current public content is copied into that
+snapshot. Readers receive the working copy only while it is published; during
+drafting and review they continue receiving the snapshot. Publishing retains the
+snapshot for one-step rollback. There is no permanent version history. The
+semantic HTML whitelist is centralized in `backend/app/articles/content_policy.py`.
 
-```bash
-uv run python -m scripts.import_html_article article.html \
-  --title "Article title" \
-  --slug article-title \
-  --date 2026-07-17 \
-  --description "Short archive description." \
-  --tags "systems,architecture"
-```
+MCP exposes publication-quality authoring instructions and these content tools:
 
-The importer keeps semantic prose, code, lists, links, images, and tables while
-removing page-level CSS, JavaScript, navigation, and interactive demos from the
-distraction-free reading representation. For a trusted, manually reviewed animated page,
-preserve an additional in-app experience with:
+- `list_posts`, `search_posts`, and `get_post` browse published content.
+- `create_article_draft` and `create_interactive_article_draft` create a working
+  article.
+- `update_article_draft` and `update_interactive_article_draft` replace that
+  working copy after preserving the current publication as the snapshot.
+- `get_article_draft` retrieves the complete working copy by slug.
+- `list_article_revision_requests` shows articles returned by a reviewer.
+- `get_article_review_context` returns the working article, public snapshot, and
+  durable feedback threads an assistant needs to revise it.
+- `reply_to_article_review_comment` records how a requested change was handled.
+- `submit_article_for_review` moves a draft into the human review queue.
 
-```bash
-uv run python -m scripts.import_html_article article.html \
-  --title "Article title" \
-  --slug article-title \
-  --date 2026-07-17 \
-  --description "Short archive description." \
-  --tags "systems,architecture" \
-  --experience-output public/experiences
-```
+MCP cannot approve, publish, discard, roll back, or delete. Interactive
+drafts require at least three checked sources from independent hosts. The
+authoring brief keeps client-supplied instructions while enforcing research,
+editorial, accessibility, theme, reduced-motion, and sandbox contracts.
+Human review, rather than browser automation on the free Render instance, is the
+mandatory publication gate.
 
-Interactive experiences never replace the React route. The reader fetches them,
-injects a restrictive Content Security Policy and progress bridge, then renders
-them in an iframe sandbox that permits scripts but not same-origin access,
-forms, popups, or top-level navigation. Readers can switch between Interactive
-and Reading/Explore views without leaving Blog Vault. Experience sources are deployed as
-plain-text assets, so navigating to one directly cannot open a second website.
-The shared HTML whitelist lives in
-`backend/app/content_policy.py` and is also used when MCP serializes a proposed
-post.
+### Human review
 
-MCP reads current content through the GitHub API. `create_post_pull_request` sanitizes and validates a post, creates a branch, commits the HTML file, and opens a pull request. Merging the pull request triggers only the frontend workflow.
+Set `BLOG_ADMIN_ACCESS_TOKEN` to a secret different from
+`BLOG_MCP_ACCESS_TOKEN`, then open `http://localhost:5173/review`. The token is
+kept in `sessionStorage`, so closing the tab clears it. The dashboard provides:
 
-For new researched writing, MCP exposes:
+- a queue of submitted, changes-requested, approved, and rollback-ready articles;
+- Reading and Explore previews in light/dark and desktop/tablet/mobile modes;
+- a published-snapshot/working-copy comparison;
+- section- and figure-anchored feedback with assistant replies;
+- explicit request-changes, approve, and publish actions.
 
-- `draft_researched_article`, an MCP prompt primitive containing the canonical
-  research, editorial, semantic HTML, animation, accessibility, and theme rules.
-- `get_article_authoring_brief`, the same contract as a tool for clients that do
-  not expose MCP prompts.
-- `create_interactive_post_pull_request`, which requires at least three checked
-  sources from independent hosts and commits the Reading HTML and interactive
-  source together in one reviewable pull request.
-
-Interactive publication validation requires complete light and dark definitions
-for semantic tokens covering page, surfaces, text, borders, accents, code, and
-status colors. It also requires reduced-motion behavior and rejects forms,
-iframes, embedded objects, external scripts, and external stylesheets. Blog
-Vault generates the index from `h2`/`h3` headings and passes the current app
-theme into the sandbox, so article generators should not create their own index
-or theme switcher. New experiences declare
-`<html data-article-contract="v1" data-theme="light">`; the version marker keeps
-future host changes explicit instead of silently breaking older articles.
-
-The GitHub credential should be a fine-grained token limited to this repository with:
-
-- Contents: read and write
-- Pull requests: read and write
-- Metadata: read
-
-For stronger rotation and short-lived credentials, replace the token with a GitHub App installation token later.
-
-## Langfuse observability
-
-Langfuse tracing is optional and disabled unless both project keys are configured.
-Create a Langfuse project, copy its API keys, and use the base URL matching the
-project's data region:
+The same endpoints are visible in `/docs` and require:
 
 ```text
-BLOG_LANGFUSE_PUBLIC_KEY=pk-lf-...
-BLOG_LANGFUSE_SECRET_KEY=sk-lf-...
-BLOG_LANGFUSE_BASE_URL=https://us.cloud.langfuse.com
-BLOG_LANGFUSE_ENVIRONMENT=development
-BLOG_LANGFUSE_SAMPLE_RATE=1.0
+Authorization: Bearer YOUR_BLOG_ADMIN_ACCESS_TOKEN
 ```
 
-The health endpoint reports `telemetryConfigured`. MCP prompts, resources, and
-tools are traced without automatic argument/result capture. GitHub API calls are
-nested below the invoking MCP operation and record only method, route, and status.
-Article HTML, interactive source, authorization values, tokens, and passwords are
-redacted before export. The FastAPI lifespan flushes queued observations during
-graceful shutdown.
-
-Start with a sample rate of `1.0` while testing. For higher traffic, reduce read
-trace volume while retaining publication and error visibility. Langfuse observes
-the server-side MCP workflow; browsing and model calls performed by an external
-MCP client are visible only if that client exports its own traces.
-
-## Supabase PostgreSQL
-
-Create a free Supabase project and copy its connection string into `BLOG_DATABASE_URL`, using the async SQLAlchemy driver:
+Typical lifecycle:
 
 ```text
-postgresql+asyncpg://USER:PASSWORD@HOST:PORT/postgres
+draft -> in_review -> approved -> published
+                 \-> changes_requested -> updated draft -> in_review
 ```
 
-Apply schema migrations:
+A reviewer must leave an unresolved comment before requesting changes. The LLM
+updates the same working article and the current review cycle keeps its comments.
+Submission freezes `contentHash`; approval fails if the article changes after it
+was submitted. An assistant does not wake automatically: ask the MCP client to
+pick up revision requests, update the working article, reply to each comment, and
+submit the new hash.
+
+Useful API checks:
 
 ```bash
-uv run alembic upgrade head
+curl -H "Authorization: Bearer $BLOG_ADMIN_ACCESS_TOKEN" \
+  http://localhost:8000/api/v1/admin/reviews
+
+curl -H "Authorization: Bearer $BLOG_ADMIN_ACCESS_TOKEN" \
+  http://localhost:8000/api/v1/admin/reviews/ARTICLE_ID
+
+curl -X POST -H "Authorization: Bearer $BLOG_ADMIN_ACCESS_TOKEN" \
+  http://localhost:8000/api/v1/admin/reviews/ARTICLE_ID/approve
 ```
 
-The initial identity is an anonymous UUID generated by the browser. It is sufficient for low-risk preferences on one browser. Add Supabase Auth before supporting private accounts or cross-device identity.
+Publication is a separate authenticated action after approval. The same protected
+API provides `discard-draft` and `rollback`; neither action is exposed through MCP.
 
-The frontend's **My library** view includes bookmark, favorite, continue-reading,
-finished, and custom-group filters. A post can belong to one personal group at a
-time. Deleting a group preserves its posts and moves them back to Ungrouped.
+## Interactive articles
 
-## Reader experience
+The React route remains in control of navigation, reader state, theme, progress,
+and mode switching. FastAPI returns the stored interactive document as inert
+plain text. The browser injects a restrictive Content Security Policy and then
+renders it in an iframe sandbox that permits inline scripts but denies
+same-origin access, network connections, forms, popups, and top-level
+navigation.
 
-The default route is a dashboard rather than an automatically selected post. It
-surfaces the featured note, recent writing, library totals, and up to three
-in-progress posts ordered by their latest reading activity. Post hashes remain
-supported as intentional deep links.
+Blog Vault generates an index from `h2`/`h3` headings and passes app-owned theme
+tokens into the sandbox. New documents use
+`<html data-article-contract="v2" data-theme="light">` and implement reduced
+motion.
 
-- `Cmd/Ctrl + K` opens a searchable command palette for posts, groups, the
-  library, and theme switching.
-- Reading mode provides a generated table of contents for `h2` and `h3`
-  headings, resumable scroll progress, and previous/next navigation.
-- Trusted animated posts open in the semantic Read view and offer a sandboxed
-  Explore view for purposeful animations. Both retain Blog Vault's reading-state
-  controls, generated index, and color-theme selection.
-- Reader typography controls persist typeface, text size, line height, and
-  content width to Supabase.
-- A compact rail indicator reports saving, saved, or offline state. Local theme
-  and bookmark data remain available if the free backend is sleeping.
+## Reader state
+
+Supabase also stores anonymous-browser preferences, bookmarks, favorites,
+progress, last-read time, and custom groups. The frontend includes dashboard,
+library filters, searchable command palette, generated contents index,
+previous/next navigation, typography controls, Reading/Explore modes, and local
+fallback state while a free backend wakes up.
+
+## Learning paths
+
+`learning_paths`, `learning_path_sections`, and `learning_path_lessons` define
+ordered curricula independently from personal groups and free-form article tags.
+The UI presents collapsible categories, sequential locks, aggregate completion,
+and path-aware previous/next lesson navigation. Completion is derived from the
+existing `reading_states.progress_percent`; paths do not duplicate reader state.
+
+MCP can inspect paths, create a curriculum, append categories, and place existing
+published articles with `list_learning_paths`, `create_learning_path`,
+`add_learning_path_section`, and `add_article_to_learning_path`. The initial
+curricula are idempotently defined in `backend/scripts/seed_learning_paths.py`.
+
+## Langfuse
+
+Tracing is enabled when both Langfuse keys are present. MCP prompts, resources,
+and tools are traced without automatic content capture; article bodies,
+interactive source, credentials, and passwords are redacted.
 
 ## Deployment
 
-### Vercel
-
-Create a Vercel project for this repository and set:
-
-- `VITE_API_URL=https://YOUR-RENDER-SERVICE.onrender.com/api/v1`
-
-Disable Vercel's automatic Git deployment because `.github/workflows/frontend.yml` owns deployment. Add these GitHub Actions secrets:
-
-- `VERCEL_TOKEN`
-- `VERCEL_ORG_ID`
-- `VERCEL_PROJECT_ID`
-
-The workflow runs only for frontend configuration, `src`, `public`, or published-post changes.
-
-### Render
-
-Create the service using `render.yaml`, then configure these secret environment variables:
-
-- `BLOG_DATABASE_URL`
-- `BLOG_GITHUB_TOKEN`
-- `BLOG_GITHUB_REPOSITORY`, formatted as `owner/repository`
-- `BLOG_MCP_ACCESS_TOKEN`
-- `BLOG_ALLOWED_ORIGINS`, formatted as `["https://your-blog.vercel.app"]`
-
-Create a Render deploy hook and add it to GitHub Actions as `RENDER_DEPLOY_HOOK_URL`. Render auto-deploy is disabled; `.github/workflows/backend.yml` triggers the hook only after backend checks pass and only for backend-related changes.
-
-MCP clients must send:
+Vercel needs:
 
 ```text
-Authorization: Bearer YOUR_BLOG_MCP_ACCESS_TOKEN
+VITE_API_URL=https://YOUR-RENDER-SERVICE.onrender.com/api/v1
 ```
 
-## CI/CD paths
+Render needs:
 
-| Change | Frontend/Vercel | Backend/Render |
-|---|---:|---:|
-| `posts/published/**` | Yes | No |
-| `src/**`, `public/**` | Yes | No |
-| `backend/**`, `migrations/**` | No | Yes |
-| `pyproject.toml`, `uv.lock` | No | Yes |
-| Documentation only | No | No |
+```text
+BLOG_DATABASE_URL
+BLOG_MCP_ACCESS_TOKEN
+BLOG_ADMIN_ACCESS_TOKEN
+BLOG_ALLOWED_ORIGINS=["https://your-blog.vercel.app"]
+```
+
+Langfuse variables are optional. `render.yaml` runs `alembic upgrade head` before
+starting FastAPI. GitHub Actions deploys Vercel only for frontend paths and
+triggers Render only for backend, migration, or Python dependency paths.
+
+## Project layout
+
+```text
+src/
+  app/                 React entry point and global shell
+  features/            home, library, reader, review, and search
+  shared/              API clients, shared components, tokens, and types
+backend/app/
+  api/                 REST transport
+  articles/            authoring policy, sanitization, and persistence
+  mcp/                 private MCP transport and tools
+  readers/             preferences, groups, and reading state
+  review/              comments and publication state machine
+migrations/            Alembic schema history
+infra/docker/          production API image
+```
 
 ## Quality checks
 

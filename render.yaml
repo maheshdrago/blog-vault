@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: blog-vault-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./infra/docker/api.Dockerfile
+    autoDeployTrigger: off
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: BLOG_DATABASE_URL
+        sync: false
+      - key: BLOG_MCP_ACCESS_TOKEN
+        sync: false
+      - key: BLOG_ADMIN_ACCESS_TOKEN
+        sync: false
+      - key: BLOG_LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: BLOG_LANGFUSE_SECRET_KEY
+        sync: false
+      - key: BLOG_LANGFUSE_BASE_URL
+        value: https://us.cloud.langfuse.com
+      - key: BLOG_LANGFUSE_ENVIRONMENT
+        value: production
+      - key: BLOG_LANGFUSE_SAMPLE_RATE
+        value: "1.0"
+      - key: BLOG_ALLOWED_ORIGINS
+        sync: false
