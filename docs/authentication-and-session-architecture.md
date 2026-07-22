@@ -208,7 +208,7 @@ sequenceDiagram
     S-->>F: access JWT + rotating refresh token + user
     F->>F: Verify returned identity and extract session_id
     F->>D: Upsert profile and application session
-    F-->>R: Set HttpOnly refresh cookie; return access JWT + user
+    F-->>R: Set HttpOnly refresh cookie and return access JWT + user
     R->>R: Keep access JWT in memory only
     R->>F: GET /api/v1/me with Bearer JWT
     F-->>R: Personalized profile
@@ -232,7 +232,7 @@ sequenceDiagram
     U->>R: Continue with Google/GitHub
     R->>F: POST /api/v1/auth/oauth/start
     F->>F: Create state + PKCE verifier
-    F-->>R: Set short-lived HttpOnly state/verifier cookies; return redirect
+    F-->>R: Set short-lived HttpOnly state/verifier cookies and return redirect
     R->>S: Navigate to authorization URL
     S->>O: Provider authorization
     O-->>S: Authorization result
@@ -240,7 +240,7 @@ sequenceDiagram
     F->>F: Verify state and callback allowlist
     F->>S: Exchange code + PKCE verifier
     S-->>F: access JWT + refresh token
-    F-->>R: Set refresh cookie; redirect to fixed app URL
+    F-->>R: Set refresh cookie and redirect to fixed app URL
 ```
 
 Only exact configured callback URLs are allowed. A request-supplied `return_to`
@@ -256,11 +256,11 @@ sequenceDiagram
     participant J as Supabase JWKS
     participant D as PostgreSQL
 
-    R->>F: PUT /api/v1/me/reading-states/{slug}\nAuthorization: Bearer access-JWT
+    R->>F: PUT /api/v1/me/reading-states/{slug}<br/>Authorization with Bearer access JWT
     F->>J: Fetch/cache key when kid is unknown
     F->>F: Verify alg, signature, iss, aud, exp, sub, session_id
     F->>D: Check application session is active
-    F->>D: Resolve sub -> internal reader_id
+    F->>D: Resolve sub to internal reader_id
     F->>D: Update only that reader's row
     F-->>R: 200 ReadingState
 ```
@@ -278,12 +278,12 @@ sequenceDiagram
     participant S as Supabase Auth
     participant D as PostgreSQL
 
-    R->>F: POST /api/v1/auth/refresh\nCSRF header + automatic HttpOnly cookie
+    R->>F: POST /api/v1/auth/refresh<br/>CSRF header + automatic HttpOnly cookie
     F->>F: Validate Origin and CSRF token
     F->>S: Exchange refresh token
     S-->>F: New access JWT + new refresh token
     F->>D: Update session last_seen_at
-    F-->>R: Replace refresh cookie; return access JWT
+    F-->>R: Replace refresh cookie and return access JWT
     R->>R: Replace in-memory access JWT
 ```
 
