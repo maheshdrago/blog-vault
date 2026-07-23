@@ -21,4 +21,4 @@ RUN useradd --create-home --uid 10001 blogvault \
 USER blogvault
 
 EXPOSE 8000
-CMD ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
