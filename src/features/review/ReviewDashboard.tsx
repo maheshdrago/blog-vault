@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { Theme } from '../../shared/types';
+import { useAuth } from '../auth/AuthContext';
 import { ReviewComments, type ReviewAnchor } from './ReviewComments';
-import { reviewApi, ReviewApiError } from './reviewApi';
+import { reviewApi } from './reviewApi';
 import {
   ReviewPreview,
   type ReviewMode,
@@ -13,8 +14,6 @@ import type {
   ReviewContext,
   ReviewQueueItem,
 } from './types';
-
-const ADMIN_TOKEN_KEY = 'blog-vault-review-token';
 
 function collectAnchors(context: ReviewContext): ReviewAnchor[] {
   const parser = new DOMParser();
@@ -36,9 +35,7 @@ function collectAnchors(context: ReviewContext): ReviewAnchor[] {
 }
 
 export function ReviewDashboard() {
-  const [token, setToken] = useState(() => sessionStorage.getItem(ADMIN_TOKEN_KEY) ?? '');
-  const [tokenDraft, setTokenDraft] = useState(token);
-  const [isAuthenticated, setAuthenticated] = useState(false);
+  const { status: authStatus, user, signOut } = useAuth();
   const [queue, setQueue] = useState<ReviewQueueItem[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
   const [context, setContext] = useState<ReviewContext>();
@@ -48,51 +45,42 @@ export function ReviewDashboard() {
   const [isBusy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
-  const loadQueue = useCallback(async (credential: string) => {
-    const items = await reviewApi.listQueue(credential);
+  const loadQueue = useCallback(async () => {
+    const items = await reviewApi.listQueue();
     setQueue(items);
-    setAuthenticated(true);
-    sessionStorage.setItem(ADMIN_TOKEN_KEY, credential);
-    setToken(credential);
     setSelectedId((current) => current && items.some((item) => item.articleId === current)
       ? current : items[0]?.articleId);
   }, []);
 
   useEffect(() => {
-    if (!token) return;
-    void loadQueue(token).catch((loadError: unknown) => {
-      sessionStorage.removeItem(ADMIN_TOKEN_KEY);
-      setAuthenticated(false);
+    if (!user) return;
+    void loadQueue().catch((loadError: unknown) => {
       setError(loadError instanceof Error ? loadError.message : 'Authentication failed.');
     });
-  }, [loadQueue, token]);
+  }, [loadQueue, user]);
 
   const loadContext = useCallback(async (articleId: string) => {
     setBusy(true);
     setError(undefined);
     try {
-      setContext(await reviewApi.getContext(token, articleId));
+      setContext(await reviewApi.getContext(articleId));
     } catch (loadError) {
-      if (loadError instanceof ReviewApiError && loadError.status === 401) {
-        sessionStorage.removeItem(ADMIN_TOKEN_KEY);
-        setAuthenticated(false);
-      }
       setError(loadError instanceof Error ? loadError.message : 'Review could not be loaded.');
     } finally {
       setBusy(false);
     }
-  }, [token]);
+  }, []);
 
   useEffect(() => {
-    if (isAuthenticated && selectedId) void loadContext(selectedId);
+    if (user && selectedId) void loadContext(selectedId);
     if (!selectedId) setContext(undefined);
-  }, [isAuthenticated, loadContext, selectedId]);
+  }, [loadContext, selectedId, user]);
 
   const refresh = async () => {
     if (!selectedId) return;
     const [nextContext] = await Promise.all([
-      reviewApi.getContext(token, selectedId),
-      loadQueue(token),
+      reviewApi.getContext(selectedId),
+      loadQueue(),
     ]);
     setContext(nextContext);
   };
@@ -103,8 +91,8 @@ export function ReviewDashboard() {
     try {
       await action();
       after?.();
-      await loadQueue(token);
-      if (selectedId && !after) setContext(await reviewApi.getContext(token, selectedId));
+      await loadQueue();
+      if (selectedId && !after) setContext(await reviewApi.getContext(selectedId));
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : 'Review action failed.');
     } finally {
@@ -117,33 +105,27 @@ export function ReviewDashboard() {
   const unresolvedCount = rootComments
     .filter((comment) => comment.status !== 'resolved').length;
 
-  if (!isAuthenticated) {
+  if (authStatus === 'bootstrapping') {
+    return <main className="review-login-shell"><p>Restoring session…</p></main>;
+  }
+  if (!user) {
     return <main className="review-login-shell"><section className="review-login-card">
       <a href="/" className="review-wordmark">BLOG VAULT</a>
       <span className="review-kicker">PRIVATE WORKSPACE</span>
       <h1>Human review</h1>
       <p>Inspect working drafts, compare the safe snapshot, and control publication.</p>
-      <form onSubmit={(event) => {
-        event.preventDefault();
-        setError(undefined);
-        void loadQueue(tokenDraft).catch((loginError: unknown) => {
-          setError(loginError instanceof Error ? loginError.message : 'Authentication failed.');
-        });
-      }}><label>Admin access token<input type="password" autoComplete="current-password"
-          value={tokenDraft} onChange={(event) => setTokenDraft(event.target.value)} /></label>
-        {error && <p className="review-error">{error}</p>}
-        <button type="submit" disabled={!tokenDraft}>Open review queue</button></form>
-      <small>The token is retained only for this browser tab.</small>
+      <a className="auth-primary-link" href="/auth">Sign in</a>
     </section></main>;
   }
-
   return <main className="review-shell">
     <header className="review-topbar"><div><a href="/" className="review-wordmark">BLOG VAULT</a>
       <span>/ REVIEW</span></div><div className="review-topbar-actions">
         <span>{queue.filter((item) => item.status !== 'published').length} active</span><button onClick={() => {
-          sessionStorage.removeItem(ADMIN_TOKEN_KEY);
-          setToken(''); setTokenDraft(''); setAuthenticated(false);
-        }}>Lock workspace</button></div></header>
+          void signOut().then(() => window.location.assign('/')).catch(
+            (caught: unknown) => setError(caught instanceof Error ? caught.message :
+              'Sign out could not be completed.'),
+          );
+        }}>Sign out</button></div></header>
     <aside className="review-queue"><div className="review-queue-heading">
       <span className="review-kicker">VERIFICATION</span><h1>Review queue</h1></div>
       <div className="review-queue-list">{queue.map((item) =>
@@ -163,10 +145,10 @@ export function ReviewDashboard() {
           <div className="review-document-actions">
             {context.article.status === 'in_review' && <>
               <button className="review-action-danger" disabled={isBusy || unresolvedCount === 0}
-                onClick={() => void runAction(() => reviewApi.requestChanges(token, context.article.articleId))}>
+                onClick={() => void runAction(() => reviewApi.requestChanges(context.article.articleId))}>
                 Request changes</button>
               <button className="review-action-primary" disabled={isBusy || unresolvedCount > 0}
-                onClick={() => void runAction(() => reviewApi.approve(token, context.article.articleId))}>
+                onClick={() => void runAction(() => reviewApi.approve(context.article.articleId))}>
                 Approve</button></>}
             {context.article.status === 'changes_requested' &&
               <button onClick={() => void navigator.clipboard.writeText(
@@ -176,19 +158,19 @@ export function ReviewDashboard() {
               <button className="review-action-danger" disabled={isBusy}
                 onClick={() => window.confirm('Discard this working draft and restore the published snapshot?') &&
                   void runAction(
-                    () => reviewApi.discardDraft(token, context.article.articleId),
+                    () => reviewApi.discardDraft(context.article.articleId),
                     () => setSelectedId(undefined),
                   )}>Discard draft</button>}
             {context.article.status === 'approved' &&
               <button className="review-action-primary" disabled={isBusy}
                 onClick={() => void runAction(
-                  () => reviewApi.publish(token, context.article.articleId),
+                  () => reviewApi.publish(context.article.articleId),
                   () => setSelectedId(undefined),
                 )}>Publish</button>}
             {context.article.status === 'published' && context.publishedSnapshot &&
               <button className="review-action-danger" disabled={isBusy}
                 onClick={() => window.confirm('Roll back to the previous published snapshot?') &&
-                  void runAction(() => reviewApi.rollback(token, context.article.articleId))}>
+                  void runAction(() => reviewApi.rollback(context.article.articleId))}>
                 Roll back publication</button>}
           </div></header>
         <nav className="review-preview-toolbar" aria-label="Preview controls">
@@ -213,7 +195,7 @@ export function ReviewDashboard() {
       onAdd={async (values: ReviewCommentDraft) => {
         setError(undefined);
         setBusy(true);
-        try { await reviewApi.addComment(token, context.article.articleId, values); await refresh(); }
+        try { await reviewApi.addComment(context.article.articleId, values); await refresh(); }
         catch (actionError) {
           setError(actionError instanceof Error ? actionError.message : 'Comment could not be saved.');
         }
@@ -221,7 +203,7 @@ export function ReviewDashboard() {
       }} onResolve={async (commentId, resolved) => {
         setError(undefined);
         setBusy(true);
-        try { await reviewApi.resolveComment(token, commentId, resolved); await refresh(); }
+        try { await reviewApi.resolveComment(commentId, resolved); await refresh(); }
         catch (actionError) {
           setError(actionError instanceof Error ? actionError.message : 'Comment could not be updated.');
         }

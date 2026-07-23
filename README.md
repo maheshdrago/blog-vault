@@ -1,24 +1,53 @@
 # Blog Vault
 
-A personal publishing system with a React reader, FastAPI REST API, private MCP
-authoring server, Supabase PostgreSQL storage, and Langfuse tracing.
+A signup-only personal publishing system with a React reader, FastAPI API,
+private MCP authoring server, Supabase Auth/PostgreSQL, and Langfuse tracing.
 
 ## Architecture
 
 ```text
-React / Vercel ── REST reads ─────────────┐
-                                          ▼
-LLM ── authenticated MCP ── FastAPI ── Supabase PostgreSQL
-             │                    │         ├─ working articles + safe snapshots
-             │                    │         └─ preferences + reading state
-             └─ creates drafts ───┘
+Browser ── same-origin /api/* ── Vercel proxy ── FastAPI ── Supabase
+   │                                      │          ├─ Auth
+   ├─ private reader + review UI          │          └─ private vault rows
+   └─ access JWT in memory                └─ refresh token in HttpOnly cookie
 
-Human reviewer ── review dashboard ── comments / approves / publishes
+MCP client ── Supabase OAuth or personal token ── FastAPI MCP ── one user's vault
 ```
 
-Git stores application code and database migrations. Article bodies, interactive
-documents, metadata, research records, drafts, and rollback snapshots live in
-Supabase. Render's filesystem is not used as durable storage.
+Git stores application code and migrations. Article bodies, interactive
+documents, metadata, research records, learning paths, drafts, and the single
+rollback snapshot live in Supabase. Render's filesystem is not durable storage.
+
+Every product surface requires an account except health and authentication
+endpoints. Articles are not public. FastAPI derives vault ownership from a
+verified identity or personal MCP credential; clients never submit an owner ID.
+
+## Authentication and ownership
+
+Registration, email/password sign-in, Google/GitHub OAuth, recovery, session
+refresh, and device revocation use Supabase Auth through FastAPI as a backend for
+frontend:
+
+```text
+Browser ── /api/v1/auth/* ── Vercel proxy ── FastAPI ── Supabase Auth
+                     access JWT: memory only
+                     refresh token: Secure HttpOnly same-site cookie
+```
+
+Authenticated browser APIs are under `/api/v1/me/*`. The React application
+waits for session bootstrap and renders no vault data while signed out.
+
+`articles` and `learning_paths` carry `owner_reader_id`. Reader preferences,
+groups, progress, bookmarks, favorites, reviews, and MCP credentials are also
+scoped to that reader. Slugs are unique within a vault, not globally.
+
+For the existing installation, the first successfully created account claims
+all legacy unowned articles and learning paths atomically. Later accounts begin
+with empty vaults. This bootstrap is protected by a PostgreSQL advisory
+transaction lock, so concurrent signups cannot both claim the content.
+
+See [the authentication architecture](docs/authentication-and-session-architecture.md)
+for the trust boundaries, schema, and request flows.
 
 ## Local development
 
@@ -42,168 +71,188 @@ npm run dev
 - REST/OpenAPI: `http://localhost:8000/docs`
 - MCP Streamable HTTP: `http://localhost:8000/mcp/`
 
-The frontend uses `VITE_API_URL`, which defaults to
-`http://localhost:8000/api/v1`.
+Vite proxies `/api/*` to FastAPI, matching production's same-origin request
+shape.
 
-## Article storage and publication
+## Article storage and review
 
-`articles` holds each stable slug and its one current working copy:
+`articles` stores one mutable working copy per owner and slug:
 
-- title, date, UI summary, tags, cover, and featured state;
+- title, date, summary, tags, cover, and featured state;
 - sanitized semantic Reading HTML;
-- optional sandboxed interactive HTML;
+- optional sandboxed interactive Explore HTML;
 - research sources and revision notes;
 - draft, review, approved, published, or archived workflow status.
 
-`article_snapshots` holds at most one previous published copy per article. Before
-MCP edits a published article, the current public content is copied into that
-snapshot. Readers receive the working copy only while it is published; during
-drafting and review they continue receiving the snapshot. Publishing retains the
-snapshot for one-step rollback. There is no permanent version history. The
-semantic HTML whitelist is centralized in `backend/app/articles/content_policy.py`.
+Here, `published` means visible in the owner's reader; it never means anonymous
+or internet-public.
 
-MCP exposes publication-quality authoring instructions and these content tools:
+`article_snapshots` stores at most one last-known-good copy per article. When an
+LLM edits a published article, the safe copy remains readable during review.
+Publishing retains the prior copy for one-step rollback. There is no permanent
+version history.
 
-- `list_posts`, `search_posts`, and `get_post` browse published content.
-- `create_article_draft` and `create_interactive_article_draft` create a working
-  article.
-- `update_article_draft` and `update_interactive_article_draft` replace that
-  working copy after preserving the current publication as the snapshot.
-- `get_article_draft` retrieves the complete working copy by slug.
-- `list_article_revision_requests` shows articles returned by a reviewer.
-- `get_article_review_context` returns the working article, public snapshot, and
-  durable feedback threads an assistant needs to revise it.
-- `reply_to_article_review_comment` records how a requested change was handled.
-- `submit_article_for_review` moves a draft into the human review queue.
+The owner reviews drafts at `/review`:
 
-MCP cannot approve, publish, discard, roll back, or delete. Interactive
-drafts require at least three checked sources from independent hosts. The
-authoring brief keeps client-supplied instructions while enforcing research,
-editorial, accessibility, theme, reduced-motion, and sandbox contracts.
-Human review, rather than browser automation on the free Render instance, is the
-mandatory publication gate.
+- compare the working article with its rollback snapshot;
+- preview Reading and Explore modes across themes and viewport sizes;
+- leave section- or figure-anchored comments;
+- request changes, approve, publish, discard, or roll back.
 
-### Human review
-
-Set `BLOG_ADMIN_ACCESS_TOKEN` to a secret different from
-`BLOG_MCP_ACCESS_TOKEN`, then open `http://localhost:5173/review`. The token is
-kept in `sessionStorage`, so closing the tab clears it. The dashboard provides:
-
-- a queue of submitted, changes-requested, approved, and rollback-ready articles;
-- Reading and Explore previews in light/dark and desktop/tablet/mobile modes;
-- a published-snapshot/working-copy comparison;
-- section- and figure-anchored feedback with assistant replies;
-- explicit request-changes, approve, and publish actions.
-
-The same endpoints are visible in `/docs` and require:
-
-```text
-Authorization: Bearer YOUR_BLOG_ADMIN_ACCESS_TOKEN
-```
-
-Typical lifecycle:
+Lifecycle:
 
 ```text
 draft -> in_review -> approved -> published
                  \-> changes_requested -> updated draft -> in_review
 ```
 
-A reviewer must leave an unresolved comment before requesting changes. The LLM
-updates the same working article and the current review cycle keeps its comments.
-Submission freezes `contentHash`; approval fails if the article changes after it
-was submitted. An assistant does not wake automatically: ask the MCP client to
-pick up revision requests, update the working article, reply to each comment, and
-submit the new hash.
+Approval is bound to a frozen content hash and fails after an unreviewed change.
+MCP cannot approve, publish, discard, roll back, or delete.
 
-Useful API checks:
+Authenticated review endpoints use the current vault:
 
-```bash
-curl -H "Authorization: Bearer $BLOG_ADMIN_ACCESS_TOKEN" \
-  http://localhost:8000/api/v1/admin/reviews
-
-curl -H "Authorization: Bearer $BLOG_ADMIN_ACCESS_TOKEN" \
-  http://localhost:8000/api/v1/admin/reviews/ARTICLE_ID
-
-curl -X POST -H "Authorization: Bearer $BLOG_ADMIN_ACCESS_TOKEN" \
-  http://localhost:8000/api/v1/admin/reviews/ARTICLE_ID/approve
+```text
+GET  /api/v1/me/reviews
+GET  /api/v1/me/reviews/{article_id}
+POST /api/v1/me/reviews/{article_id}/approve
 ```
 
-Publication is a separate authenticated action after approval. The same protected
-API provides `discard-draft` and `rollback`; neither action is exposed through MCP.
+## MCP
+
+OAuth-capable clients such as Claude and ChatGPT connect with the MCP URL only:
+
+```text
+https://YOUR_RENDER_SERVICE.onrender.com/mcp/
+```
+
+The endpoint advertises RFC 9728 protected-resource metadata. The client
+discovers Supabase OAuth, dynamically registers when enabled, opens Blog Vault's
+`/oauth/consent` screen, and receives its own access and refresh tokens after
+the user approves. FastAPI accepts only signed OAuth JWTs containing the
+OAuth-only `client_id` claim and maps `sub` to one reader profile.
+
+For Claude Code, CI, or clients without browser OAuth, create a personal MCP
+credential on `/account`. Its plaintext is displayed once and the database
+stores only a SHA-256 digest. Credentials can be named, audited by last use, and
+revoked independently.
+
+Configure a client with:
+
+```text
+URL: https://YOUR_RENDER_SERVICE.onrender.com/mcp/
+Authorization: Bearer bv_mcp_...
+```
+
+The token resolves to exactly one `reader_id`. MCP tools and resources therefore
+cannot list, read, create, update, review, or categorize another user's content.
+
+Important tools include:
+
+- `list_posts`, `search_posts`, and `get_post`;
+- `create_article_draft` and `create_interactive_article_draft`;
+- `update_article_draft` and `update_interactive_article_draft`;
+- `get_article_draft`, `submit_article_for_review`, and revision tools;
+- learning-path inspection and editing tools.
+
+The authoring prompt adds quality, research, theme-token, accessibility,
+reduced-motion, and sandbox requirements without replacing the user's own
+instructions.
 
 ## Interactive articles
 
-The React route remains in control of navigation, reader state, theme, progress,
-and mode switching. FastAPI returns the stored interactive document as inert
-plain text. The browser injects a restrictive Content Security Policy and then
-renders it in an iframe sandbox that permits inline scripts but denies
-same-origin access, network connections, forms, popups, and top-level
-navigation.
+FastAPI returns stored interactive documents as inert plain text. React injects
+a restrictive Content Security Policy and renders them inside a sandboxed iframe
+that allows inline article scripts but denies same-origin access, network
+connections, forms, popups, and top-level navigation.
 
-Blog Vault generates an index from `h2`/`h3` headings and passes app-owned theme
-tokens into the sandbox. New documents use
-`<html data-article-contract="v2" data-theme="light">` and implement reduced
-motion.
+The app owns navigation, theme, progress, typography, and Reading/Explore mode.
+It generates a contents index from `h2`/`h3`, supplies semantic theme tokens, and
+requires reduced-motion behavior.
 
-## Reader state
+## Learning paths and reader state
 
-Supabase also stores anonymous-browser preferences, bookmarks, favorites,
-progress, last-read time, and custom groups. The frontend includes dashboard,
-library filters, searchable command palette, generated contents index,
-previous/next navigation, typography controls, Reading/Explore modes, and local
-fallback state while a free backend wakes up.
+Each private vault can organize articles into ordered learning paths with
+collapsible sections, sequential locks, aggregate progress, and previous/next
+lesson navigation. Completion derives from the same private reading state used
+for bookmarks, favorites, custom groups, and last-read position.
 
-## Learning paths
+The idempotent seed script targets the oldest authenticated account:
 
-`learning_paths`, `learning_path_sections`, and `learning_path_lessons` define
-ordered curricula independently from personal groups and free-form article tags.
-The UI presents collapsible categories, sequential locks, aggregate completion,
-and path-aware previous/next lesson navigation. Completion is derived from the
-existing `reading_states.progress_percent`; paths do not duplicate reader state.
+```bash
+uv run python -m backend.scripts.seed_learning_paths
+```
 
-MCP can inspect paths, create a curriculum, append categories, and place existing
-published articles with `list_learning_paths`, `create_learning_path`,
-`add_learning_path_section`, and `add_article_to_learning_path`. The initial
-curricula are idempotently defined in `backend/scripts/seed_learning_paths.py`.
-
-## Langfuse
-
-Tracing is enabled when both Langfuse keys are present. MCP prompts, resources,
-and tools are traced without automatic content capture; article bodies,
-interactive source, credentials, and passwords are redacted.
+Create an account first.
 
 ## Deployment
 
-Vercel needs:
+Vercel is the browser-facing gateway. `vercel.json` forwards `/api/*` to Render
+before the React SPA fallback, so auth cookies remain first-party from the
+browser's perspective.
+
+Both hosts remain connected to the `main` branch, while GitHub Actions owns
+validation. The path-filtered frontend and backend workflows test only the
+affected application. Configure Vercel's production Deployment Check to require
+the `Frontend / validate` GitHub check; Render uses
+`autoDeployTrigger: checksPass` and waits for successful GitHub checks before
+deploying. This avoids platform deployment tokens and duplicate deploy jobs in
+GitHub Actions.
+
+Frontend:
 
 ```text
-VITE_API_URL=https://YOUR-RENDER-SERVICE.onrender.com/api/v1
+VITE_API_URL=/api/v1
+VITE_MCP_URL=https://blog-vault-api.onrender.com/mcp/
 ```
 
-Render needs:
+Render:
 
 ```text
 BLOG_DATABASE_URL
-BLOG_MCP_ACCESS_TOKEN
-BLOG_ADMIN_ACCESS_TOKEN
+BLOG_SUPABASE_URL
+BLOG_SUPABASE_PUBLISHABLE_KEY
+BLOG_SUPABASE_JWT_ISSUER
+BLOG_MCP_RESOURCE_URL=https://blog-vault-api.onrender.com/mcp/
+BLOG_MCP_OAUTH_ISSUER_URL=https://PROJECT_REF.supabase.co/auth/v1
+BLOG_MCP_OAUTH_AUDIENCE=authenticated
+BLOG_AUTH_ALLOWED_ORIGINS=["https://your-blog.vercel.app"]
+BLOG_AUTH_CALLBACK_URL=https://your-blog.vercel.app/api/v1/auth/callback
+BLOG_AUTH_COOKIE_SECURE=true
 BLOG_ALLOWED_ORIGINS=["https://your-blog.vercel.app"]
 ```
 
-Langfuse variables are optional. `render.yaml` runs `alembic upgrade head` before
-starting FastAPI. GitHub Actions deploys Vercel only for frontend paths and
-triggers Render only for backend, migration, or Python dependency paths.
+Personal MCP credentials are database records created by users; there is no
+shared MCP environment secret.
+
+In Supabase, use an asymmetric JWT signing key, add the exact callback URL to
+Auth redirect URLs, and configure the enabled identity providers. Then enable
+Authentication → OAuth Server, set Authorization Path to `/oauth/consent`, and
+enable Dynamic Client Registration for automatic MCP connector setup. The
+Supabase Site URL must be the Vercel origin. Keep email confirmation enabled and
+use custom SMTP before relying on production email. `render.yaml` runs
+`alembic upgrade head` before FastAPI starts.
+
+Supabase OAuth access tokens use the audience `authenticated` by default, which
+matches the default backend setting. For stricter resource-bound JWTs, configure
+a Supabase Custom Access Token Hook to set OAuth-token `aud` to the exact
+`BLOG_MCP_RESOURCE_URL`, then change `BLOG_MCP_OAUTH_AUDIENCE` to that URL.
+
+Langfuse variables are optional. Article bodies and credentials are excluded
+from automatic trace capture.
 
 ## Project layout
 
 ```text
 src/
-  app/                 React entry point and global shell
+  app/                 React entry point and private shell
+  features/auth/       registration, sign-in, account, and sessions
   features/            home, library, reader, review, and search
-  shared/              API clients, shared components, tokens, and types
+  shared/              API clients, components, tokens, and types
 backend/app/
-  api/                 REST transport
+  api/                 health and authenticated REST transport
+  auth/                Supabase BFF, JWT verification, and MCP credentials
   articles/            authoring policy, sanitization, and persistence
-  mcp/                 private MCP transport and tools
+  mcp/                 owner-scoped MCP tools and resources
   readers/             preferences, groups, and reading state
   review/              comments and publication state machine
 migrations/            Alembic schema history

@@ -27,14 +27,18 @@ from ..tables import (
 class LearningPathRepository:
     """Own curriculum structure and project reader progress onto its lessons."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, owner_reader_id: UUID) -> None:
         self._session = session
+        self._owner_reader_id = owner_reader_id
 
     async def list_paths(self, reader_id: UUID | None = None) -> list[LearningPath]:
         """Return published paths with ordered categories, lessons, and progress."""
         paths = await self._session.scalars(
             select(LearningPathTable)
-            .where(LearningPathTable.is_published.is_(True))
+            .where(
+                LearningPathTable.owner_reader_id == self._owner_reader_id,
+                LearningPathTable.is_published.is_(True),
+            )
             .order_by(LearningPathTable.sort_order, LearningPathTable.title)
         )
         return [await self._to_path(path, reader_id) for path in paths]
@@ -42,7 +46,10 @@ class LearningPathRepository:
     async def get_path(self, slug: str, reader_id: UUID | None = None) -> LearningPath:
         """Return one complete path by stable slug."""
         path = await self._session.scalar(
-            select(LearningPathTable).where(LearningPathTable.slug == slug)
+            select(LearningPathTable).where(
+                LearningPathTable.owner_reader_id == self._owner_reader_id,
+                LearningPathTable.slug == slug,
+            )
         )
         if path is None:
             raise ArticleNotFoundError(f"Learning path not found: {slug}")
@@ -54,6 +61,7 @@ class LearningPathRepository:
             select(func.max(LearningPathTable.sort_order))
         )
         row = LearningPathTable(
+            owner_reader_id=self._owner_reader_id,
             slug=values.slug,
             title=values.title,
             description=values.description,
@@ -105,7 +113,10 @@ class LearningPathRepository:
                 f"Learning path section not found: {section_title}"
             )
         article = await self._session.scalar(
-            select(ArticleTable).where(ArticleTable.slug == values.article_slug)
+            select(ArticleTable).where(
+                ArticleTable.owner_reader_id == self._owner_reader_id,
+                ArticleTable.slug == values.article_slug,
+            )
         )
         if article is None:
             raise ArticleNotFoundError(f"Article not found: {values.article_slug}")
@@ -128,7 +139,10 @@ class LearningPathRepository:
 
     async def _path_row(self, slug: str) -> LearningPathTable:
         path = await self._session.scalar(
-            select(LearningPathTable).where(LearningPathTable.slug == slug)
+            select(LearningPathTable).where(
+                LearningPathTable.owner_reader_id == self._owner_reader_id,
+                LearningPathTable.slug == slug,
+            )
         )
         if path is None:
             raise ArticleNotFoundError(f"Learning path not found: {slug}")
@@ -150,7 +164,7 @@ class LearningPathRepository:
         progress_total = 0
         total = 0
         prerequisite_met = True
-        articles = ArticleRepository(self._session)
+        articles = ArticleRepository(self._session, self._owner_reader_id)
         for section in section_rows:
             lesson_rows = await self._session.execute(
                 select(LearningPathLessonTable, ArticleTable.slug)

@@ -26,7 +26,7 @@ from .sanitizer import sanitize_article_html
 
 
 class ArticleNotFoundError(LookupError):
-    """Raised when an article or public snapshot does not exist."""
+    """Raised when an article is absent from the current private vault."""
 
 
 class ArticleConflictError(ValueError):
@@ -36,12 +36,13 @@ class ArticleConflictError(ValueError):
 class ArticleRepository:
     """Own one working copy and at most one last-published snapshot per article."""
 
-    def __init__(self, session: AsyncSession) -> None:
-        """Initialize the repository with a transaction-scoped session."""
+    def __init__(self, session: AsyncSession, owner_reader_id: UUID) -> None:
+        """Bind every repository operation to one authenticated vault owner."""
         self._session = session
+        self._owner_reader_id = owner_reader_id
 
     async def list_published(self) -> list[PostSummary]:
-        """Return public summaries, falling back to snapshots during review."""
+        """Return owner summaries, falling back to snapshots during review."""
         rows = await self._session.execute(
             select(ArticleTable, ArticleSnapshotTable)
             .outerjoin(
@@ -49,10 +50,11 @@ class ArticleRepository:
                 ArticleSnapshotTable.article_id == ArticleTable.article_id,
             )
             .where(
+                ArticleTable.owner_reader_id == self._owner_reader_id,
                 or_(
                     ArticleTable.status == ArticleWorkflowStatus.PUBLISHED.value,
                     ArticleSnapshotTable.article_id.is_not(None),
-                )
+                ),
             )
         )
         public = [self._public_row(article, snapshot) for article, snapshot in rows]
@@ -62,26 +64,28 @@ class ArticleRepository:
         return [self._summary_for(row) for row in public]
 
     async def get_published(self, slug: str) -> Post:
-        """Return the safe public copy for a slug."""
+        """Return the safe published copy within the owner's vault."""
         return self._to_post(await self._public_content(slug))
 
     async def get_published_experience(self, slug: str) -> str:
-        """Return the interactive document from the safe public copy."""
+        """Return the owner's published interactive document."""
         row = await self._public_content(slug)
         if row.experience_html is None:
             raise ArticleNotFoundError(f"Interactive experience not found: {slug}")
         return row.experience_html
 
     async def search_published(self, query: str, limit: int = 10) -> list[Post]:
-        """Search safe public article copies in memory."""
+        """Search the owner's safe published article copies in memory."""
         needle = query.casefold().strip()
         if not needle:
             return []
         rows = await self._session.execute(
-            select(ArticleTable, ArticleSnapshotTable).outerjoin(
+            select(ArticleTable, ArticleSnapshotTable)
+            .outerjoin(
                 ArticleSnapshotTable,
                 ArticleSnapshotTable.article_id == ArticleTable.article_id,
             )
+            .where(ArticleTable.owner_reader_id == self._owner_reader_id)
         )
         matches: list[Post] = []
         for article, snapshot in rows:
@@ -110,6 +114,7 @@ class ArticleRepository:
             raise ArticleConflictError(f"Article already exists: {values.slug}")
         post, experience_html, sources = self._normalize_input(values)
         row = ArticleTable(
+            owner_reader_id=self._owner_reader_id,
             slug=post.slug,
             status=ArticleWorkflowStatus.DRAFT.value,
             **self._content_values(post, experience_html, sources, revision_notes),
@@ -160,9 +165,7 @@ class ArticleRepository:
 
     async def get_article(self, article_id: UUID) -> ArticleDetail:
         """Return the complete working copy by stable identifier."""
-        article = await self._session.get(ArticleTable, article_id)
-        if article is None:
-            raise ArticleNotFoundError(f"Article not found: {article_id}")
+        article = await self._article_by_id(article_id)
         return self._to_detail(article)
 
     async def get_article_by_slug(self, slug: str) -> ArticleDetail:
@@ -174,6 +177,7 @@ class ArticleRepository:
 
     async def get_snapshot(self, article_id: UUID) -> ArticleSnapshot | None:
         """Return the last-published snapshot when one exists."""
+        await self._article_by_id(article_id)
         row = await self._session.get(ArticleSnapshotTable, article_id)
         return self._to_snapshot(row) if row is not None else None
 
@@ -215,7 +219,7 @@ class ArticleRepository:
         return self._to_record(article)
 
     async def discard_draft(self, article_id: UUID) -> ArticleRecord:
-        """Restore the public snapshot and abandon an untrusted working draft."""
+        """Restore the safe snapshot and abandon an untrusted working draft."""
         article = await self._article_by_id(article_id, lock=True)
         if article.status == ArticleWorkflowStatus.PUBLISHED.value:
             raise ArticleConflictError(
@@ -255,7 +259,10 @@ class ArticleRepository:
                 ArticleSnapshotTable,
                 ArticleSnapshotTable.article_id == ArticleTable.article_id,
             )
-            .where(ArticleTable.slug == slug)
+            .where(
+                ArticleTable.owner_reader_id == self._owner_reader_id,
+                ArticleTable.slug == slug,
+            )
         )
         record = result.one_or_none()
         if record is None:
@@ -421,7 +428,10 @@ class ArticleRepository:
     async def _article_by_slug(
         self, slug: str, *, lock: bool = False
     ) -> ArticleTable | None:
-        statement = select(ArticleTable).where(ArticleTable.slug == slug)
+        statement = select(ArticleTable).where(
+            ArticleTable.owner_reader_id == self._owner_reader_id,
+            ArticleTable.slug == slug,
+        )
         if lock:
             statement = statement.with_for_update()
         return cast(ArticleTable | None, await self._session.scalar(statement))
@@ -429,7 +439,10 @@ class ArticleRepository:
     async def _article_by_id(
         self, article_id: UUID, *, lock: bool = False
     ) -> ArticleTable:
-        statement = select(ArticleTable).where(ArticleTable.article_id == article_id)
+        statement = select(ArticleTable).where(
+            ArticleTable.owner_reader_id == self._owner_reader_id,
+            ArticleTable.article_id == article_id,
+        )
         if lock:
             statement = statement.with_for_update()
         article = await self._session.scalar(statement)

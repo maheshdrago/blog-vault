@@ -11,6 +11,8 @@ def test_mask_trace_data_redacts_content_and_credentials() -> None:
             "html": "<p>private draft</p>",
             "nested": {
                 "authorization": "Bearer private-value",
+                "refresh_token": "provider-refresh-secret",
+                "csrf_token": "browser-csrf-secret",
                 "message": "request used github_pat_secret-value",
             },
         }
@@ -21,6 +23,8 @@ def test_mask_trace_data_redacts_content_and_credentials() -> None:
         "html": "[REDACTED]",
         "nested": {
             "authorization": "[REDACTED]",
+            "refresh_token": "[REDACTED]",
+            "csrf_token": "[REDACTED]",
             "message": "request used [REDACTED]",
         },
     }

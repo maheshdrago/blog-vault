@@ -4,6 +4,13 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/((?!assets/|content/).*)", "destination": "/index.html" }
+    {
+      "source": "/api/:path*",
+      "destination": "https://blog-vault-api.onrender.com/api/:path*"
+    },
+    {
+      "source": "/((?!api/|assets/|content/).*)",
+      "destination": "/index.html"
+    }
   ]
 }

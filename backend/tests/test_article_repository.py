@@ -72,7 +72,7 @@ def test_interactive_draft_enters_human_review_with_frozen_hash() -> None:
     article = make_article(ArticleWorkflowStatus.DRAFT)
     session_mock = AsyncMock()
     session_mock.scalar.return_value = article
-    repository = ArticleRepository(cast(AsyncSession, session_mock))
+    repository = ArticleRepository(cast(AsyncSession, session_mock), uuid4())
 
     result = asyncio.run(
         repository.submit_for_review(article.slug, article.content_hash)
@@ -86,7 +86,7 @@ def test_interactive_draft_enters_human_review_with_frozen_hash() -> None:
 
 
 def test_restoring_snapshot_discards_untrusted_working_content() -> None:
-    """A human discard restores the last-known-good public copy."""
+    """A human discard restores the last-known-good private copy."""
     article = make_article(ArticleWorkflowStatus.CHANGES_REQUESTED)
     article.review_cycle_id = uuid4()
     published_at = datetime.now(UTC)
@@ -114,15 +114,15 @@ def test_restoring_snapshot_discards_untrusted_working_content() -> None:
     assert article.published_at == published_at
 
 
-def test_public_reads_use_snapshot_while_working_copy_is_under_review() -> None:
-    """Unapproved LLM content must never replace the safe public article."""
+def test_vault_reads_use_snapshot_while_working_copy_is_under_review() -> None:
+    """Unapproved LLM content must never replace the safe vault article."""
     article = make_article(ArticleWorkflowStatus.IN_REVIEW)
     snapshot = ArticleSnapshotTable(
         article_id=article.article_id,
         slug=article.slug,
-        title="Safe public title",
+        title="Safe vault title",
         publication_date=date(2026, 7, 20),
-        description="The public snapshot.",
+        description="The private snapshot.",
         tags=["safe"],
         cover="/safe.png",
         featured=False,

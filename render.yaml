@@ -4,15 +4,31 @@ services:
     runtime: docker
     plan: free
     dockerfilePath: ./infra/docker/api.Dockerfile
-    autoDeployTrigger: off
+    autoDeployTrigger: checksPass
     healthCheckPath: /api/v1/health
     envVars:
       - key: BLOG_DATABASE_URL
         sync: false
-      - key: BLOG_MCP_ACCESS_TOKEN
+      - key: BLOG_SUPABASE_URL
         sync: false
-      - key: BLOG_ADMIN_ACCESS_TOKEN
+      - key: BLOG_SUPABASE_PUBLISHABLE_KEY
         sync: false
+      - key: BLOG_SUPABASE_JWT_ISSUER
+        sync: false
+      - key: BLOG_MCP_RESOURCE_URL
+        sync: false
+      - key: BLOG_MCP_OAUTH_ISSUER_URL
+        sync: false
+      - key: BLOG_MCP_OAUTH_AUDIENCE
+        value: authenticated
+      - key: BLOG_AUTH_ALLOWED_ORIGINS
+        sync: false
+      - key: BLOG_AUTH_CALLBACK_URL
+        sync: false
+      - key: BLOG_IP_HMAC_SECRET
+        sync: false
+      - key: BLOG_AUTH_COOKIE_SECURE
+        value: "true"
       - key: BLOG_LANGFUSE_PUBLIC_KEY
         sync: false
       - key: BLOG_LANGFUSE_SECRET_KEY

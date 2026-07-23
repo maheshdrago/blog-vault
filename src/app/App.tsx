@@ -1,18 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Dashboard } from '../features/home/Dashboard';
+import { PublicLanding } from '../features/home/PublicLanding';
+import { useAuth } from '../features/auth/AuthContext';
 import { Library, type LibraryFilter, type LibraryMode } from '../features/library/Library';
 import { Preview } from '../features/reader/Preview';
 import { Reader } from '../features/reader/Reader';
 import { CommandPalette } from '../features/search/CommandPalette';
+import type { AuthUser } from '../shared/api/authApi';
 import { blogApi } from '../shared/api/blogApi';
-import { getReaderId, readerApi, type LearningPath, type ReaderGroup, type ReaderPreferences,
-  type ReadingState } from '../shared/api/readerApi';
+import { readerApi, type LearningPath, type ReaderGroup,
+  type ReaderPreferences, type ReadingState } from '../shared/api/readerApi';
 import { Icon } from '../shared/components/Icons';
 import { SyncStatus, type SyncState } from '../shared/components/SyncStatus';
 import type { BlogPost, PostSummary, SortOrder, Theme } from '../shared/types';
 
 export function App() {
+  const { status, user } = useAuth();
+
+  if (status === 'bootstrapping') {
+    return <main className="vault-gate"><span className="auth-loading-indicator" />
+      <p>Restoring your private vault…</p></main>;
+  }
+  if (!user) {
+    return <PublicLanding />;
+  }
+  return <VaultApp user={user} />;
+}
+
+function VaultApp({ user }: { user: AuthUser }) {
   const [posts, setPosts] = useState<PostSummary[]>([]);
   const [isLoading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string>();
@@ -26,16 +42,15 @@ export function App() {
   const [isReaderOpen, setReaderOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>(() =>
     (localStorage.getItem('theme') as Theme) || 'dark');
-  const [saved, setSaved] = useState<Set<string>>(() =>
-    new Set(JSON.parse(localStorage.getItem('savedPosts') || '[]') as string[]));
+  const [saved, setSaved] = useState<Set<string>>(new Set());
   const [readingStates, setReadingStates] = useState<Map<string, ReadingState>>(new Map());
   const [groups, setGroups] = useState<ReaderGroup[]>([]);
   const [learningPaths, setLearningPaths] = useState<LearningPath[]>([]);
   const [activePathSlug, setActivePathSlug] = useState<string | undefined>(() =>
     localStorage.getItem('activeLearningPath') ?? undefined);
-  const [readerId] = useState(getReaderId);
+  const ownerReaderId = user.readerId;
   const [preferences, setPreferences] = useState<ReaderPreferences>({
-    readerId,
+    readerId: ownerReaderId,
     theme,
     fontScale: 100,
     fontFamily: 'serif',
@@ -70,10 +85,10 @@ export function App() {
 
   useEffect(() => {
     Promise.all([
-      readerApi.getPreferences(readerId),
-      readerApi.listReadingStates(readerId),
-      readerApi.listGroups(readerId),
-      readerApi.listLearningPaths(readerId),
+      readerApi.getPreferences(),
+      readerApi.listReadingStates(),
+      readerApi.listGroups(),
+      readerApi.listLearningPaths(),
     ]).then(([preferences, states, readerGroups, paths]) => {
       if (preferences.theme !== 'system') setTheme(preferences.theme);
       setPreferences(preferences);
@@ -85,10 +100,9 @@ export function App() {
         ? current : paths[0]?.slug);
       setSyncState('saved');
     }).catch(() => {
-      // Local storage remains an offline fallback when the free API is asleep.
       setSyncState('offline');
     });
-  }, [readerId]);
+  }, [ownerReaderId]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -147,7 +161,7 @@ export function App() {
     setReadingStates((current) => {
       const existing = current.get(slug);
       const nextState: ReadingState = {
-        readerId,
+        readerId: ownerReaderId,
         postSlug: slug,
         isFavorite: false,
         isBookmarked: false,
@@ -159,13 +173,13 @@ export function App() {
         ...patch,
       };
       const next = new Map(current).set(slug, nextState);
-      void readerApi.updateReadingState(readerId, slug, {
+      void readerApi.updateReadingState(ownerReaderId, slug, {
         isBookmarked: nextState.isBookmarked,
         isFavorite: nextState.isFavorite,
         progressPercent: nextState.progressPercent,
         groupId: nextState.groupId,
       }).then(async () => {
-        setLearningPaths(await readerApi.listLearningPaths(readerId));
+        setLearningPaths(await readerApi.listLearningPaths());
         setSyncState('saved');
       }).catch(() => setSyncState('offline'));
       setSyncState('saving');
@@ -178,7 +192,6 @@ export function App() {
     const next = new Set(saved);
     next.has(selectedPost.slug) ? next.delete(selectedPost.slug) : next.add(selectedPost.slug);
     setSaved(next);
-    localStorage.setItem('savedPosts', JSON.stringify([...next]));
     updatePostState(selectedPost.slug, { isBookmarked: next.has(selectedPost.slug) });
   };
 
@@ -203,7 +216,7 @@ export function App() {
 
   const createGroup = async (name: string, color: string) => {
     setSyncState('saving');
-    const group = await readerApi.createGroup(readerId, name, color);
+    const group = await readerApi.createGroup(ownerReaderId, name, color);
     setGroups((current) => [...current, group]);
     setLibraryFilter(`group:${group.groupId}`);
     setSyncState('saved');
@@ -211,7 +224,7 @@ export function App() {
 
   const deleteGroup = async (groupId: string) => {
     setSyncState('saving');
-    await readerApi.deleteGroup(readerId, groupId);
+    await readerApi.deleteGroup(ownerReaderId, groupId);
     setGroups((current) => current.filter((group) => group.groupId !== groupId));
     setReadingStates((current) => new Map([...current].map(([slug, state]) =>
       [slug, state.groupId === groupId ? { ...state, groupId: null } : state])));
@@ -231,7 +244,7 @@ export function App() {
     setSyncState('saving');
     window.clearTimeout(preferenceTimer.current);
     preferenceTimer.current = window.setTimeout(() => {
-      void readerApi.updatePreferences(readerId, next)
+      void readerApi.updatePreferences(ownerReaderId, next)
         .then((savedPreferences) => {
           setPreferences(savedPreferences);
           setSyncState('saved');
@@ -278,8 +291,9 @@ export function App() {
             onClick={openLearningPath} aria-label="Learning paths"><Icon name="logo" /></button>
           <button className="rail-button" onClick={toggleTheme}
             aria-label="Toggle color theme"><Icon name={theme === 'dark' ? 'moon' : 'sun'} /></button></nav>
-        <SyncStatus state={syncState} /><a className="avatar" href="/review"
-          aria-label="Open private review workspace">M</a></aside>
+        <SyncStatus state={syncState} /><a className="avatar" href="/account"
+          aria-label="Open account and devices">
+          {(user.displayName || user.email || 'R').slice(0, 1).toUpperCase()}</a></aside>
       <Library filter={libraryFilter} groups={groups} isOpen={isLibraryOpen}
         paths={learningPaths} activePathSlug={activePathSlug}
         mode={libraryMode} posts={visiblePosts} query={query} readingStates={readingStates}

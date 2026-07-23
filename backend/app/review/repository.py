@@ -34,9 +34,10 @@ _REVIEW_QUEUE_STATUSES = (
 class ReviewRepository:
     """Own feedback and review transitions for the current working article."""
 
-    def __init__(self, session: AsyncSession) -> None:
-        """Initialize the repository with a transaction-scoped session."""
+    def __init__(self, session: AsyncSession, owner_reader_id: UUID) -> None:
+        """Bind review operations to one authenticated private vault."""
         self._session = session
+        self._owner_reader_id = owner_reader_id
 
     async def list_queue(
         self,
@@ -50,7 +51,10 @@ class ReviewRepository:
             statuses = (*statuses, ArticleWorkflowStatus.PUBLISHED.value)
         rows = await self._session.scalars(
             select(ArticleTable)
-            .where(ArticleTable.status.in_(statuses))
+            .where(
+                ArticleTable.owner_reader_id == self._owner_reader_id,
+                ArticleTable.status.in_(statuses),
+            )
             .order_by(ArticleTable.updated_at.desc())
         )
         result: list[ArticleReviewQueueItem] = []
@@ -99,7 +103,7 @@ class ReviewRepository:
 
     async def get_context(self, article_id: UUID) -> ArticleReviewContext:
         """Return the working article, safe snapshot, and active feedback."""
-        articles = ArticleRepository(self._session)
+        articles = ArticleRepository(self._session, self._owner_reader_id)
         article = await articles.get_article(article_id)
         comments = (
             await self.list_comments(article_id, article.review_cycle_id)
@@ -116,6 +120,9 @@ class ReviewRepository:
         self, article_id: UUID, review_cycle_id: UUID
     ) -> list[ArticleReviewComment]:
         """List root comments and replies for one active review cycle."""
+        await ArticleRepository(self._session, self._owner_reader_id).get_article(
+            article_id
+        )
         rows = await self._session.scalars(
             select(ArticleReviewCommentTable)
             .where(
@@ -160,7 +167,12 @@ class ReviewRepository:
             raise ArticleConflictError("Assistant replies require a human comment.")
         if parent.status == ReviewCommentStatus.RESOLVED.value:
             raise ArticleConflictError("Resolved comments cannot receive new replies.")
-        article = await self._session.get(ArticleTable, parent.article_id)
+        article = await self._session.scalar(
+            select(ArticleTable).where(
+                ArticleTable.article_id == parent.article_id,
+                ArticleTable.owner_reader_id == self._owner_reader_id,
+            )
+        )
         if article is None:
             raise ArticleNotFoundError(f"Article not found: {parent.article_id}")
         if article.review_cycle_id != parent.review_cycle_id:
@@ -194,7 +206,12 @@ class ReviewRepository:
         row = await self._session.get(ArticleReviewCommentTable, comment_id)
         if row is None or row.parent_comment_id is not None:
             raise ArticleNotFoundError(f"Root review comment not found: {comment_id}")
-        article = await self._session.get(ArticleTable, row.article_id)
+        article = await self._session.scalar(
+            select(ArticleTable).where(
+                ArticleTable.article_id == row.article_id,
+                ArticleTable.owner_reader_id == self._owner_reader_id,
+            )
+        )
         if article is None or article.review_cycle_id != row.review_cycle_id:
             raise ArticleConflictError("This comment belongs to a closed review cycle.")
         row.status = (
@@ -260,7 +277,12 @@ class ReviewRepository:
         return await self.get_context(article_id)
 
     async def _reviewable_article(self, article_id: UUID) -> ArticleTable:
-        article = await self._session.get(ArticleTable, article_id)
+        article = await self._session.scalar(
+            select(ArticleTable).where(
+                ArticleTable.article_id == article_id,
+                ArticleTable.owner_reader_id == self._owner_reader_id,
+            )
+        )
         if article is None:
             raise ArticleNotFoundError(f"Article not found: {article_id}")
         if article.status not in _REVIEW_QUEUE_STATUSES:

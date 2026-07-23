@@ -288,7 +288,7 @@ class ArticleReviewQueueItem(ArticleRecord):
 
 
 class ArticleReviewContext(ApiModel):
-    """Working article, public snapshot, and current review feedback."""
+    """Working article, private rollback snapshot, and review feedback."""
 
     article: ArticleDetail
     published_snapshot: ArticleSnapshot | None = None
@@ -360,12 +360,12 @@ class HealthResponse(ApiModel):
 
     status: str
     database_configured: bool
-    article_review_configured: bool
     telemetry_configured: bool
+    authentication_configured: bool
 
 
 class ReaderPreferencesInput(ApiModel):
-    """Mutable display preferences associated with an anonymous reader."""
+    """Mutable display preferences associated with one reader profile."""
 
     theme: str = Field(default="dark", pattern=r"^(dark|light|system)$")
     font_scale: int = Field(default=100, ge=80, le=150)

@@ -42,9 +42,8 @@ def test_approval_rejects_unresolved_feedback() -> None:
     """Human approval must wait until every active thread is resolved."""
     article = make_article(ArticleWorkflowStatus.IN_REVIEW)
     session_mock = AsyncMock()
-    session_mock.get.return_value = article
-    session_mock.scalar.return_value = 1
-    repository = ReviewRepository(cast(AsyncSession, session_mock))
+    session_mock.scalar.side_effect = [article, 1]
+    repository = ReviewRepository(cast(AsyncSession, session_mock), uuid4())
 
     with pytest.raises(ArticleConflictError, match="Resolve every"):
         asyncio.run(repository.approve(article.article_id))
@@ -54,9 +53,8 @@ def test_approval_marks_exact_submitted_article_approved() -> None:
     """A clean review approves only the frozen submitted content hash."""
     article = make_article(ArticleWorkflowStatus.IN_REVIEW)
     session_mock = AsyncMock()
-    session_mock.get.return_value = article
-    session_mock.scalar.return_value = 0
-    repository = ReviewRepository(cast(AsyncSession, session_mock))
+    session_mock.scalar.side_effect = [article, 0]
+    repository = ReviewRepository(cast(AsyncSession, session_mock), uuid4())
     cast(Any, repository).get_context = AsyncMock(return_value=None)
 
     asyncio.run(repository.approve(article.article_id))
@@ -71,8 +69,8 @@ def test_approval_rejects_content_changed_after_submission() -> None:
     article = make_article(ArticleWorkflowStatus.IN_REVIEW)
     article.content_hash = "c" * 64
     session_mock = AsyncMock()
-    session_mock.get.return_value = article
-    repository = ReviewRepository(cast(AsyncSession, session_mock))
+    session_mock.scalar.return_value = article
+    repository = ReviewRepository(cast(AsyncSession, session_mock), uuid4())
 
     with pytest.raises(ArticleConflictError, match="changed after review"):
         asyncio.run(repository.approve(article.article_id))
@@ -82,9 +80,8 @@ def test_request_changes_requires_actionable_human_comment() -> None:
     """A reviewer cannot return an article without explaining what should change."""
     article = make_article(ArticleWorkflowStatus.IN_REVIEW)
     session_mock = AsyncMock()
-    session_mock.get.return_value = article
-    session_mock.scalar.return_value = 0
-    repository = ReviewRepository(cast(AsyncSession, session_mock))
+    session_mock.scalar.side_effect = [article, 0]
+    repository = ReviewRepository(cast(AsyncSession, session_mock), uuid4())
 
     with pytest.raises(ArticleConflictError, match="at least one"):
         asyncio.run(repository.request_changes(article.article_id))
@@ -95,9 +92,8 @@ def test_request_changes_preserves_cycle_and_unfreezes_content() -> None:
     article = make_article(ArticleWorkflowStatus.IN_REVIEW)
     cycle_id = article.review_cycle_id
     session_mock = AsyncMock()
-    session_mock.get.return_value = article
-    session_mock.scalar.return_value = 1
-    repository = ReviewRepository(cast(AsyncSession, session_mock))
+    session_mock.scalar.side_effect = [article, 1]
+    repository = ReviewRepository(cast(AsyncSession, session_mock), uuid4())
     cast(Any, repository).get_context = AsyncMock(return_value=None)
 
     asyncio.run(repository.request_changes(article.article_id))

@@ -1,4 +1,4 @@
-import { resolveApiPath } from '../../shared/api/config';
+import { authenticatedFetch } from '../../shared/api/authApi';
 import type {
   ReviewComment,
   ReviewCommentDraft,
@@ -17,14 +17,12 @@ export class ReviewApiError extends Error {
 
 async function request<T>(
   path: string,
-  token: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(resolveApiPath(path), {
+  const response = await authenticatedFetch(path, {
     ...init,
     headers: {
       Accept: 'application/json',
-      Authorization: `Bearer ${token}`,
       ...(init.body ? { 'Content-Type': 'application/json' } : {}),
       ...init.headers,
     },
@@ -39,35 +37,32 @@ async function request<T>(
 }
 
 export const reviewApi = {
-  listQueue: (token: string): Promise<ReviewQueueItem[]> =>
-    request('/admin/reviews?includePublished=true', token),
-  getContext: (token: string, articleId: string): Promise<ReviewContext> =>
-    request(`/admin/reviews/${articleId}`, token),
+  listQueue: (): Promise<ReviewQueueItem[]> =>
+    request('/me/reviews?includePublished=true'),
+  getContext: (articleId: string): Promise<ReviewContext> =>
+    request(`/me/reviews/${articleId}`),
   addComment: (
-    token: string,
     articleId: string,
     values: ReviewCommentDraft,
-  ): Promise<ReviewComment> => request(`/admin/reviews/${articleId}/comments`, token, {
+  ): Promise<ReviewComment> => request(`/me/reviews/${articleId}/comments`, {
     method: 'POST',
     body: JSON.stringify(values),
   }),
   resolveComment: (
-    token: string,
     commentId: string,
     resolved: boolean,
   ): Promise<ReviewComment> => request(
-    `/admin/reviews/comments/${commentId}/resolution`,
-    token,
+    `/me/reviews/comments/${commentId}/resolution`,
     { method: 'PUT', body: JSON.stringify({ resolved }) },
   ),
-  requestChanges: (token: string, articleId: string): Promise<ReviewContext> =>
-    request(`/admin/reviews/${articleId}/request-changes`, token, { method: 'POST' }),
-  approve: (token: string, articleId: string): Promise<ReviewContext> =>
-    request(`/admin/reviews/${articleId}/approve`, token, { method: 'POST' }),
-  publish: (token: string, articleId: string): Promise<unknown> =>
-    request(`/admin/reviews/${articleId}/publish`, token, { method: 'POST' }),
-  discardDraft: (token: string, articleId: string): Promise<unknown> =>
-    request(`/admin/reviews/${articleId}/discard-draft`, token, { method: 'POST' }),
-  rollback: (token: string, articleId: string): Promise<unknown> =>
-    request(`/admin/reviews/${articleId}/rollback`, token, { method: 'POST' }),
+  requestChanges: (articleId: string): Promise<ReviewContext> =>
+    request(`/me/reviews/${articleId}/request-changes`, { method: 'POST' }),
+  approve: (articleId: string): Promise<ReviewContext> =>
+    request(`/me/reviews/${articleId}/approve`, { method: 'POST' }),
+  publish: (articleId: string): Promise<unknown> =>
+    request(`/me/reviews/${articleId}/publish`, { method: 'POST' }),
+  discardDraft: (articleId: string): Promise<unknown> =>
+    request(`/me/reviews/${articleId}/discard-draft`, { method: 'POST' }),
+  rollback: (articleId: string): Promise<unknown> =>
+    request(`/me/reviews/${articleId}/rollback`, { method: 'POST' }),
 };

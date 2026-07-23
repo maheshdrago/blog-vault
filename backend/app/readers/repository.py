@@ -24,7 +24,7 @@ class ReaderRepository:
         self._session = session
 
     async def get_preferences(self, reader_id: UUID) -> ReaderPreferences:
-        """Return preferences, creating the anonymous reader when necessary."""
+        """Return preferences, creating the internal profile when necessary."""
         profile = await self._get_or_create_profile(reader_id)
         return self._to_preferences(profile)
 

@@ -134,17 +134,18 @@ dependencies = [
     { name = "asyncpg" },
     { name = "bleach" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "langfuse" },
     { name = "mcp" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic-settings" },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
@@ -157,17 +158,18 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.30.0,<1" },
     { name = "bleach", specifier = ">=6.2.0,<7" },
     { name = "fastapi", specifier = ">=0.116.0,<1" },
+    { name = "httpx", specifier = ">=0.28.0,<1" },
     { name = "langfuse", specifier = ">=4.0.0,<5" },
     { name = "mcp", specifier = ">=1.12.0,<2" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0,<4" },
     { name = "pydantic-settings", specifier = ">=2.10.0,<3" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10.0,<3" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35.0,<1" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.28.0,<1" },
     { name = "mypy", specifier = ">=1.17.0,<2" },
     { name = "pytest", specifier = ">=8.4.0,<9" },
     { name = "ruff", specifier = ">=0.12.0,<1" },

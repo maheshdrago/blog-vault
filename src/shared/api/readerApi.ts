@@ -1,4 +1,4 @@
-import { resolveApiPath } from './config';
+import { authenticatedFetch } from './authApi';
 import type { PostSummary } from '../types';
 
 export interface ReadingState {
@@ -62,49 +62,45 @@ export interface LearningPath {
   sections: LearningPathSection[];
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(resolveApiPath(path), {
+async function authenticatedRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const requestInit: RequestInit = {
     ...init,
+    credentials: 'same-origin',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...init?.headers },
-  });
+  };
+  const response = await authenticatedFetch(path, requestInit);
   if (!response.ok) throw new Error(`Reader API failed with status ${response.status}.`);
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
-export function getReaderId(): string {
-  const existing = localStorage.getItem('readerId');
-  if (existing) return existing;
-  const created = crypto.randomUUID();
-  localStorage.setItem('readerId', created);
-  return created;
-}
-
 export const readerApi = {
-  getPreferences: (readerId: string): Promise<ReaderPreferences> =>
-    request(`/readers/${readerId}/preferences`),
-  updatePreferences: (readerId: string,
-    values: Pick<ReaderPreferences, 'theme' | 'fontScale' | 'fontFamily' | 'lineHeight' | 'contentWidth'>): Promise<ReaderPreferences> =>
-    request(`/readers/${readerId}/preferences`, {
+  getPreferences: (): Promise<ReaderPreferences> =>
+    authenticatedRequest('/me/preferences'),
+  updatePreferences: (_readerId: string,
+    values: Pick<ReaderPreferences,
+    'theme' | 'fontScale' | 'fontFamily' | 'lineHeight' | 'contentWidth'>): Promise<ReaderPreferences> =>
+    authenticatedRequest('/me/preferences', {
       method: 'PUT', body: JSON.stringify(values),
     }),
-  listReadingStates: (readerId: string): Promise<ReadingState[]> =>
-    request(`/readers/${readerId}/reading-states`),
-  listLearningPaths: (readerId: string): Promise<LearningPath[]> =>
-    request(`/readers/${readerId}/learning-paths`),
-  listGroups: (readerId: string): Promise<ReaderGroup[]> =>
-    request(`/readers/${readerId}/groups`),
-  createGroup: (readerId: string, name: string, color: string): Promise<ReaderGroup> =>
-    request(`/readers/${readerId}/groups`, {
+  listReadingStates: (): Promise<ReadingState[]> =>
+    authenticatedRequest('/me/reading-states'),
+  listLearningPaths: (): Promise<LearningPath[]> =>
+    authenticatedRequest('/me/learning-paths'),
+  listGroups: (): Promise<ReaderGroup[]> =>
+    authenticatedRequest('/me/groups'),
+  createGroup: (_readerId: string, name: string, color: string): Promise<ReaderGroup> =>
+    authenticatedRequest('/me/groups', {
       method: 'POST', body: JSON.stringify({ name, color }),
     }),
-  deleteGroup: (readerId: string, groupId: string): Promise<void> =>
-    request(`/readers/${readerId}/groups/${groupId}`, { method: 'DELETE' }),
+  deleteGroup: (_readerId: string, groupId: string): Promise<void> =>
+    authenticatedRequest(`/me/groups/${groupId}`, { method: 'DELETE' }),
   updateReadingState: (
-    readerId: string,
+    _readerId: string,
     postSlug: string,
     state: Pick<ReadingState, 'isFavorite' | 'isBookmarked' | 'progressPercent' | 'groupId'>,
-  ): Promise<ReadingState> => request(`/readers/${readerId}/reading-states/${postSlug}`, {
-    method: 'PUT', body: JSON.stringify(state),
-  }),
+  ): Promise<ReadingState> =>
+    authenticatedRequest(`/me/reading-states/${postSlug}`, {
+      method: 'PUT', body: JSON.stringify(state),
+    }),
 };

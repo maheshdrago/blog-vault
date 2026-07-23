@@ -6,7 +6,9 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from pydantic import AnyHttpUrl
 
 from ..articles.authoring_policy import (
     ARTICLE_CONTRACT_VERSION,
@@ -15,6 +17,7 @@ from ..articles.authoring_policy import (
     build_authoring_prompt,
 )
 from ..articles.repository import ArticleRepository
+from ..config import settings
 from ..database import database_session
 from ..learning_paths.repository import LearningPathRepository
 from ..models import (
@@ -27,7 +30,9 @@ from ..models import (
     PostInput,
 )
 from ..review.repository import ReviewRepository
+from ..security import current_mcp_reader_id
 from ..telemetry import trace_observation, update_current_observation
+from .auth import token_verifier
 
 mcp = FastMCP(
     "Blog Vault",
@@ -38,24 +43,30 @@ mcp = FastMCP(
         "authoring prompt, preserve the user's article instructions, browse "
         "current primary sources, and keep a research record. Before an update, "
         "fetch the complete current post and submit a complete replacement with "
-        "the same slug. The last published snapshot remains public while an "
-        "update is reviewed. Use interactive figures only when they materially "
-        "improve understanding. Human review is the publication gate. When a "
-        "reviewer requests changes, fetch the review context, implement every "
+        "the same slug. The last published snapshot remains readable privately "
+        "while an update is reviewed. Use interactive figures only when they "
+        "materially improve understanding. Human review is the publication gate. "
+        "When a reviewer requests changes, fetch the review context, implement every "
         "open comment in the working article, and reply to each "
         "comment with what changed. MCP never approves, publishes, or deletes."
     ),
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
+    token_verifier=token_verifier,
+    auth=AuthSettings(
+        issuer_url=AnyHttpUrl(settings.mcp_oauth_issuer),
+        resource_server_url=AnyHttpUrl(settings.mcp_resource_url),
+        required_scopes=[],
+    ),
 )
 
 
 @asynccontextmanager
 async def _repository() -> AsyncIterator[ArticleRepository]:
-    """Yield a transactional article repository for one MCP operation."""
+    """Yield a repository scoped to the credential owner's private vault."""
     async with database_session() as session:
-        yield ArticleRepository(session)
+        yield ArticleRepository(session, current_mcp_reader_id())
 
 
 @mcp.prompt()
@@ -300,7 +311,7 @@ async def update_interactive_article_draft(
 async def list_article_revision_requests() -> list[dict[str, Any]]:
     """List working articles returned with unresolved human feedback."""
     async with database_session() as session:
-        result = await ReviewRepository(session).list_queue(
+        result = await ReviewRepository(session, current_mcp_reader_id()).list_queue(
             status=ArticleWorkflowStatus.CHANGES_REQUESTED
         )
     update_current_observation(output={"revisionRequestCount": len(result)})
@@ -310,10 +321,11 @@ async def list_article_revision_requests() -> list[dict[str, Any]]:
 @mcp.tool()
 @trace_observation("mcp.tool.get_article_review_context")
 async def get_article_review_context(slug: str) -> dict[str, Any]:
-    """Fetch the working article, public snapshot, and feedback threads."""
+    """Fetch the working article, rollback snapshot, and feedback threads."""
     async with database_session() as session:
-        article = await ArticleRepository(session).get_article_by_slug(slug)
-        result = await ReviewRepository(session).get_context(article.article_id)
+        owner = current_mcp_reader_id()
+        article = await ArticleRepository(session, owner).get_article_by_slug(slug)
+        result = await ReviewRepository(session, owner).get_context(article.article_id)
     update_current_observation(
         input={"slug": slug},
         output={"commentCount": len(result.comments)},
@@ -329,7 +341,9 @@ async def reply_to_article_review_comment(
     """Explain how human feedback was implemented and mark it addressed."""
     values = ArticleReviewReplyInput(body=body)
     async with database_session() as session:
-        result = await ReviewRepository(session).reply_as_assistant(comment_id, values)
+        result = await ReviewRepository(
+            session, current_mcp_reader_id()
+        ).reply_as_assistant(comment_id, values)
     update_current_observation(
         input={"commentId": str(comment_id)},
         output={"status": result.status},
@@ -368,7 +382,9 @@ async def get_article_draft(slug: str) -> dict[str, Any]:
 async def list_learning_paths() -> list[dict[str, Any]]:
     """Inspect current curricula and categories before placing a new article."""
     async with database_session() as session:
-        paths = await LearningPathRepository(session).list_paths()
+        paths = await LearningPathRepository(
+            session, current_mcp_reader_id()
+        ).list_paths()
     update_current_observation(output={"pathCount": len(paths)})
     return [path.model_dump(mode="json", by_alias=True) for path in paths]
 
@@ -378,7 +394,9 @@ async def list_learning_paths() -> list[dict[str, Any]]:
 async def create_learning_path(path: LearningPathInput) -> dict[str, Any]:
     """Create a new curated learning sequence."""
     async with database_session() as session:
-        result = await LearningPathRepository(session).create_path(path)
+        result = await LearningPathRepository(
+            session, current_mcp_reader_id()
+        ).create_path(path)
     update_current_observation(
         input={"slug": path.slug}, output={"pathId": str(result.path_id)}
     )
@@ -392,7 +410,9 @@ async def add_learning_path_section(
 ) -> dict[str, Any]:
     """Append a named category to an existing curriculum."""
     async with database_session() as session:
-        result = await LearningPathRepository(session).add_section(path_slug, section)
+        result = await LearningPathRepository(
+            session, current_mcp_reader_id()
+        ).add_section(path_slug, section)
     return result.model_dump(mode="json", by_alias=True)
 
 
@@ -405,9 +425,9 @@ async def add_article_to_learning_path(
 ) -> dict[str, Any]:
     """Append a published article to one path category."""
     async with database_session() as session:
-        result = await LearningPathRepository(session).add_lesson(
-            path_slug, section_title, lesson
-        )
+        result = await LearningPathRepository(
+            session, current_mcp_reader_id()
+        ).add_lesson(path_slug, section_title, lesson)
     update_current_observation(
         input={"pathSlug": path_slug, "articleSlug": lesson.article_slug}
     )

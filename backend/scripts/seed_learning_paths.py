@@ -3,6 +3,8 @@
 import asyncio
 from typing import TypedDict
 
+from sqlalchemy import select
+
 from backend.app.database import database_session
 from backend.app.learning_paths.repository import LearningPathRepository
 from backend.app.models import (
@@ -10,6 +12,7 @@ from backend.app.models import (
     LearningPathLessonInput,
     LearningPathSectionInput,
 )
+from backend.app.tables import ReaderProfileTable
 
 
 class SeedPath(TypedDict):
@@ -90,7 +93,17 @@ PATHS: tuple[SeedPath, ...] = (
 async def seed() -> None:
     """Create missing paths, sections, and lessons without reordering existing work."""
     async with database_session() as session:
-        repository = LearningPathRepository(session)
+        owner_reader_id = await session.scalar(
+            select(ReaderProfileTable.reader_id)
+            .where(ReaderProfileTable.auth_user_id.is_not(None))
+            .order_by(ReaderProfileTable.created_at)
+            .limit(1)
+        )
+        if owner_reader_id is None:
+            raise RuntimeError(
+                "Create a Blog Vault account before seeding private learning paths."
+            )
+        repository = LearningPathRepository(session, owner_reader_id)
         existing_paths = {path.slug: path for path in await repository.list_paths()}
         for definition in PATHS:
             path_input = definition["path"]

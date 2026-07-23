@@ -1,10 +1,8 @@
 import type { BlogPost, PostSummary } from '../types';
-import { resolveApiPath } from './config';
+import { authenticatedFetch } from './authApi';
 
 async function request<T>(path: string): Promise<T> {
-  const response = await fetch(resolveApiPath(path), {
-    headers: { Accept: 'application/json' },
-  });
+  const response = await authenticatedFetch(path);
   if (!response.ok) {
     throw new Error(`Blog API request failed with status ${response.status}.`);
   }
@@ -13,9 +11,9 @@ async function request<T>(path: string): Promise<T> {
 
 export const blogApi = {
   listPosts: async (): Promise<PostSummary[]> => {
-    return request<PostSummary[]>('/posts');
+    return request<PostSummary[]>('/me/posts');
   },
   getPost: async (slug: string): Promise<BlogPost> => {
-    return request<BlogPost>(`/posts/${encodeURIComponent(slug)}`);
+    return request<BlogPost>(`/me/posts/${encodeURIComponent(slug)}`);
   },
 };

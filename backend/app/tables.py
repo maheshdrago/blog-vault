@@ -34,12 +34,19 @@ class ArticleTable(Base):
             "'published', 'archived')",
             name="ck_articles_status",
         ),
+        UniqueConstraint("owner_reader_id", "slug", name="uq_articles_owner_slug"),
     )
 
     article_id: Mapped[UUID] = mapped_column(
         Uuid, primary_key=True, server_default=func.gen_random_uuid()
     )
-    slug: Mapped[str] = mapped_column(String(160), unique=True, nullable=False)
+    owner_reader_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("reader_profiles.reader_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    slug: Mapped[str] = mapped_column(String(160), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="draft", nullable=False)
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     publication_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -155,11 +162,22 @@ class LearningPathTable(Base):
     """A curated, ordered curriculum exposed to readers and MCP clients."""
 
     __tablename__ = "learning_paths"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_reader_id", "slug", name="uq_learning_paths_owner_slug"
+        ),
+    )
 
     path_id: Mapped[UUID] = mapped_column(
         Uuid, primary_key=True, server_default=func.gen_random_uuid()
     )
-    slug: Mapped[str] = mapped_column(String(160), unique=True, nullable=False)
+    owner_reader_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("reader_profiles.reader_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    slug: Mapped[str] = mapped_column(String(160), nullable=False)
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str] = mapped_column(String(500), nullable=False)
     icon: Mapped[str] = mapped_column(String(30), default="book", nullable=False)
@@ -232,23 +250,30 @@ class LearningPathLessonTable(Base):
 
 
 class ReaderProfileTable(Base):
-    """Anonymous reader preferences identified by a browser-generated UUID."""
+    """Reader preferences, optionally linked to a Supabase identity."""
 
     __tablename__ = "reader_profiles"
 
     reader_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    auth_user_id: Mapped[UUID | None] = mapped_column(Uuid, unique=True, nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    app_role: Mapped[str] = mapped_column(String(20), default="reader", nullable=False)
     theme: Mapped[str] = mapped_column(String(10), default="dark")
     font_scale: Mapped[int] = mapped_column(Integer, default=100)
     font_family: Mapped[str] = mapped_column(String(10), default="serif")
     line_height: Mapped[int] = mapped_column(Integer, default=180)
     content_width: Mapped[int] = mapped_column(Integer, default=760)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
 class ReadingStateTable(Base):
-    """Per-post state belonging to an anonymous reader profile."""
+    """Per-post state belonging to one authenticated reader profile."""
 
     __tablename__ = "reading_states"
 
@@ -298,4 +323,90 @@ class ReaderGroupTable(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class UserSessionTable(Base):
+    """Application session metadata keyed by the Supabase session claim."""
+
+    __tablename__ = "user_sessions"
+    __table_args__ = (
+        CheckConstraint("expires_at > created_at", name="ck_user_session_expiry"),
+    )
+
+    session_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    auth_user_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    reader_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("reader_profiles.reader_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    device_label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    ip_prefix_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    csrf_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class SecurityEventTable(Base):
+    """Credential-free security audit record with bounded metadata."""
+
+    __tablename__ = "security_events"
+
+    event_id: Mapped[UUID] = mapped_column(
+        Uuid, primary_key=True, server_default=func.gen_random_uuid()
+    )
+    auth_user_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    session_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("user_sessions.session_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    ip_prefix_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    event_metadata: Mapped[dict[str, str]] = mapped_column(
+        "metadata", JSON, default=dict, nullable=False
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class McpCredentialTable(Base):
+    """A revocable, hashed MCP credential scoped to one private vault."""
+
+    __tablename__ = "mcp_credentials"
+
+    credential_id: Mapped[UUID] = mapped_column(
+        Uuid, primary_key=True, server_default=func.gen_random_uuid()
+    )
+    reader_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("reader_profiles.reader_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    label: Mapped[str] = mapped_column(String(80), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )

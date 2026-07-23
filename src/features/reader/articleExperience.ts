@@ -2,7 +2,7 @@
 
 import { INTERACTIVE_EXPERIENCE_PATH_PATTERN } from './contentPolicy';
 import { ARTICLE_THEME_TOKEN_NAMES } from './articleTheme';
-import { resolveApiPath } from '../../shared/api/config';
+import { authenticatedFetch } from '../../shared/api/authApi';
 
 export const ARTICLE_EXPERIENCE_MESSAGE_SOURCE = 'blog-vault-article-experience';
 
@@ -409,7 +409,7 @@ export async function loadArticleExperience(
   if (!INTERACTIVE_EXPERIENCE_PATH_PATTERN.test(path)) {
     throw new Error('Invalid interactive article path.');
   }
-  const response = await fetch(resolveApiPath(path), {
+  const response = await authenticatedFetch(`/me${path}`, {
     headers: { Accept: 'text/plain' },
     signal,
   });
