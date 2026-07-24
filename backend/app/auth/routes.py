@@ -8,7 +8,16 @@ from typing import Literal, cast
 from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Header,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import RedirectResponse
 
 from ..config import settings
@@ -16,6 +25,7 @@ from ..database import DatabaseSession
 from .dependencies import Principal, bearer_token
 from .jwt_verifier import AccessTokenError, jwt_verifier
 from .models import (
+    OAUTH_AUTHORIZATION_ID_PATTERN,
     AuthSessionResponse,
     MessageResponse,
     OAuthAuthorizationDetails,
@@ -447,14 +457,14 @@ async def update_password(
     response_model=OAuthAuthorizationDetails | OAuthRedirect,
 )
 async def oauth_authorization_details(
-    authorization_id: UUID,
     principal: Principal,
+    authorization_id: str = Path(pattern=OAUTH_AUTHORIZATION_ID_PATTERN),
     authorization: str | None = Header(default=None),
 ) -> OAuthAuthorizationDetails | OAuthRedirect:
     """Return trusted client details for the signed-in consent screen."""
     try:
         payload = await supabase_auth.oauth_authorization_details(
-            str(authorization_id), bearer_token(authorization)
+            authorization_id, bearer_token(authorization)
         )
     except IdentityProviderError as error:
         raise _translate_provider(error) from error
@@ -474,10 +484,10 @@ async def oauth_authorization_details(
     response_model=OAuthRedirect,
 )
 async def decide_oauth_authorization(
-    authorization_id: UUID,
     values: OAuthConsentInput,
     request: Request,
     principal: Principal,
+    authorization_id: str = Path(pattern=OAUTH_AUTHORIZATION_ID_PATTERN),
     authorization: str | None = Header(default=None),
 ) -> OAuthRedirect:
     """Apply the user's explicit OAuth approval or denial at Supabase."""
@@ -485,7 +495,7 @@ async def decide_oauth_authorization(
     _require_origin(request)
     try:
         payload = await supabase_auth.decide_oauth_authorization(
-            str(authorization_id),
+            authorization_id,
             values.decision.value,
             bearer_token(authorization),
         )

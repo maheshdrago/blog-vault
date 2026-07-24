@@ -1,5 +1,6 @@
 """Typed request, response, and principal models for authentication."""
 
+import re
 from datetime import datetime
 from enum import StrEnum
 from urllib.parse import parse_qs, urlsplit
@@ -8,6 +9,11 @@ from uuid import UUID
 from pydantic import Field, field_validator
 
 from ..models import ApiModel
+
+# Supabase issues opaque OAuth authorization identifiers (base32-style tokens),
+# not UUIDs. Accept URL-safe tokens (UUID strings still match this shape).
+OAUTH_AUTHORIZATION_ID_PATTERN = r"^[A-Za-z0-9_-]{16,128}$"
+_OAUTH_AUTHORIZATION_ID = re.compile(OAUTH_AUTHORIZATION_ID_PATTERN)
 
 
 class AppRole(StrEnum):
@@ -81,11 +87,7 @@ def is_safe_auth_return_path(value: str) -> bool:
     query = parse_qs(parsed.query, keep_blank_values=True)
     if set(query) != {"authorization_id"} or len(query["authorization_id"]) != 1:
         return False
-    try:
-        UUID(query["authorization_id"][0])
-    except ValueError:
-        return False
-    return True
+    return _OAUTH_AUTHORIZATION_ID.match(query["authorization_id"][0]) is not None
 
 
 def validate_auth_return_path(value: str) -> str:
@@ -177,7 +179,7 @@ class OAuthAuthorizationUser(ApiModel):
 class OAuthAuthorizationDetails(ApiModel):
     """Validated details for a pending OAuth authorization request."""
 
-    authorization_id: UUID
+    authorization_id: str
     redirect_uri: str
     client: OAuthAuthorizationClient
     user: OAuthAuthorizationUser
