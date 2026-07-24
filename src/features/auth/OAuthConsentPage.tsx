@@ -18,7 +18,8 @@ const scopeLabels: Record<string, string> = {
   phone: 'See the phone number attached to your account',
 };
 
-function clientHost(uri: string): string | null {
+function clientHost(uri: string | null | undefined): string | null {
+  if (!uri) return null;
   try {
     return new URL(uri).host;
   } catch {

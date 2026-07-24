@@ -165,8 +165,10 @@ class OAuthAuthorizationClient(ApiModel):
 
     id: str
     name: str
-    uri: str
-    logo_uri: str
+    # Dynamically registered clients (e.g. Claude) may omit these, so Supabase
+    # returns the authorization without them.
+    uri: str | None = None
+    logo_uri: str | None = None
 
 
 class OAuthAuthorizationUser(ApiModel):

@@ -47,8 +47,8 @@ export interface McpCredentialCreated extends McpCredential {
 export interface OAuthAuthorizationClient {
   id: string;
   name: string;
-  uri: string;
-  logoUri: string;
+  uri?: string | null;
+  logoUri?: string | null;
 }
 
 export interface OAuthAuthorizationDetails {
