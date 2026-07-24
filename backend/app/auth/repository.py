@@ -114,6 +114,7 @@ class AuthRepository:
                 csrf_token_hash=hash_csrf_token(csrf_token),
             )
             self._session.add(row)
+            await self._session.flush()
         else:
             if row.auth_user_id != claims.auth_user_id:
                 raise SessionRejectedError("Session ownership is inconsistent.")
