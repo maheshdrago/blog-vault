@@ -118,7 +118,13 @@ def draft_researched_article(
     interactive: bool = True,
     user_instructions: str = "",
 ) -> str:
-    """Return the required research-first Blog Vault drafting prompt."""
+    """Slash-command form of the Blog Vault authoring brief.
+
+    Returns the research-first, contract-v2 drafting prompt for a topic. During
+    autonomous authoring prefer the get_article_authoring_brief tool (it also
+    returns the theme tokens and research gate); use this prompt when a person
+    wants to kick off a draft interactively.
+    """
     prompt = build_authoring_prompt(
         topic,
         audience,
@@ -140,7 +146,12 @@ def draft_researched_article(
 @mcp.resource("blog://authoring-guide")
 @trace_observation("mcp.resource.authoring_guide", as_type="retriever")
 def authoring_guide() -> str:
-    """Expose the canonical editorial and interactive-article contract."""
+    """The canonical Blog Vault authoring contract, as a readable reference.
+
+    The same editorial and interactive-HTML rules that get_article_authoring_brief
+    returns, rendered with a placeholder topic. Read it to learn the house
+    standard; call the tool to get a topic-specific brief before drafting.
+    """
     guide = build_authoring_prompt(
         "[replace with the article topic]",
         "technically curious readers",
@@ -158,7 +169,13 @@ def get_article_authoring_brief(
     interactive: bool = True,
     user_instructions: str = "",
 ) -> dict[str, Any]:
-    """Get the publication prompt before browsing, researching, or drafting."""
+    """Get the binding authoring brief. Call this FIRST for any article request.
+
+    Returns contract v2, the topic-specific writing prompt, the exact --article-*
+    theme-token fallback values, the metadata rules, and the research gate. Read
+    it before researching or drafting; the create/update tools validate against
+    this same contract and reject anything that ignores it.
+    """
     result = {
         "contractVersion": ARTICLE_CONTRACT_VERSION,
         "prompt": build_authoring_prompt(
@@ -204,7 +221,11 @@ def get_article_authoring_brief(
 @mcp.resource("blog://posts")
 @trace_observation("mcp.resource.published_index", as_type="retriever")
 async def published_index() -> str:
-    """Return the published database-backed blog index as JSON."""
+    """JSON index of every published post (metadata only, no HTML bodies).
+
+    Resource form of list_posts, for clients that browse resources. Read a full
+    body with the get_post tool or the blog://posts/{slug} resource.
+    """
     async with _repository() as repository:
         posts = await repository.list_published()
     result = json.dumps(
@@ -218,7 +239,11 @@ async def published_index() -> str:
 @mcp.resource("blog://posts/{slug}")
 @trace_observation("mcp.resource.published_post", as_type="retriever")
 async def published_post(slug: str) -> str:
-    """Return a complete published post from the database as JSON."""
+    """One complete published post as JSON, including its HTML body.
+
+    Resource form of get_post. Returns published content only; use the
+    get_article_draft tool for the current working copy, which may differ.
+    """
     async with _repository() as repository:
         post = await repository.get_published(slug)
     update_current_observation(
@@ -231,7 +256,12 @@ async def published_post(slug: str) -> str:
 @mcp.tool()
 @trace_observation("mcp.tool.list_posts")
 async def list_posts(tag: str | None = None) -> list[dict[str, Any]]:
-    """List published database articles without complete HTML bodies."""
+    """List published posts as lightweight metadata (no HTML bodies).
+
+    Optionally filter by an exact tag. Use it to see what already exists before
+    drafting, or before placing an article in a learning path. Fetch a full body
+    with get_post.
+    """
     async with _repository() as repository:
         posts = await repository.list_published()
     if tag:
@@ -246,7 +276,11 @@ async def list_posts(tag: str | None = None) -> list[dict[str, Any]]:
 @mcp.tool()
 @trace_observation("mcp.tool.search_posts")
 async def search_posts(query: str, limit: int = 10) -> list[dict[str, Any]]:
-    """Search published titles, tags, descriptions, and HTML bodies."""
+    """Full-text search across published titles, tags, descriptions, and bodies.
+
+    Returns ranked published matches (metadata only). Use it to check for prior
+    coverage and avoid duplicating an existing article before drafting a new one.
+    """
     async with _repository() as repository:
         matches = await repository.search_published(query, limit)
     update_current_observation(
@@ -259,7 +293,11 @@ async def search_posts(query: str, limit: int = 10) -> list[dict[str, Any]]:
 @mcp.tool()
 @trace_observation("mcp.tool.get_post")
 async def get_post(slug: str) -> dict[str, Any]:
-    """Fetch one complete published post from Supabase PostgreSQL."""
+    """Fetch one complete PUBLISHED post by slug, including its HTML body.
+
+    Returns published content only. For the current working draft, which may
+    differ from what is published, use get_article_draft instead.
+    """
     async with _repository() as repository:
         post = await repository.get_published(slug)
     update_current_observation(
@@ -328,7 +366,14 @@ async def create_interactive_article_draft(
 async def update_article_draft(
     post: PostInput, revision_notes: str = ""
 ) -> dict[str, Any]:
-    """Replace the working copy while retaining one safe published snapshot."""
+    """Replace an existing NON-interactive draft's working copy (uncommon).
+
+    Prefer update_interactive_article_draft for reader-facing pieces. Fetch the
+    current article with get_article_draft first, then submit a complete same-slug
+    replacement; the last published snapshot stays privately readable while the
+    new working copy is reviewed. post.html must be semantic contract-v2 HTML,
+    never Markdown.
+    """
     async with _repository() as repository:
         result = await repository.update_draft(post, revision_notes or None)
     update_current_observation(
@@ -343,7 +388,16 @@ async def update_article_draft(
 async def update_interactive_article_draft(
     post: InteractivePostInput, revision_notes: str = ""
 ) -> dict[str, Any]:
-    """Store complete researched Reading/Explore replacement documents."""
+    """Replace an existing interactive article with a complete new working copy.
+
+    Fetch the current post with get_article_draft first (or
+    get_article_review_context when addressing feedback), then submit a complete
+    same-slug replacement. Same contract as create_interactive_article_draft: a
+    self-contained contract-v2 experience_html with all 22 --article-* tokens at
+    their exact values, prefers-reduced-motion, no external resources, and at
+    least three research_sources. The last published snapshot stays privately
+    readable while the update is reviewed.
+    """
     async with _repository() as repository:
         result = await repository.update_draft(post, revision_notes or None)
     update_current_observation(
@@ -365,7 +419,12 @@ async def update_interactive_article_draft(
 @mcp.tool()
 @trace_observation("mcp.tool.list_article_revision_requests")
 async def list_article_revision_requests() -> list[dict[str, Any]]:
-    """List working articles returned with unresolved human feedback."""
+    """List your articles the reviewer sent back with changes requested.
+
+    Start here when resuming review work. For each item, call
+    get_article_review_context to read the open comments, revise the working
+    article, reply to each comment, then resubmit for review.
+    """
     async with database_session() as session:
         result = await ReviewRepository(session, current_mcp_reader_id()).list_queue(
             status=ArticleWorkflowStatus.CHANGES_REQUESTED
@@ -377,7 +436,12 @@ async def list_article_revision_requests() -> list[dict[str, Any]]:
 @mcp.tool()
 @trace_observation("mcp.tool.get_article_review_context")
 async def get_article_review_context(slug: str) -> dict[str, Any]:
-    """Fetch the working article, rollback snapshot, and feedback threads."""
+    """Fetch everything needed to act on review feedback for one slug.
+
+    Returns the current working article, the published rollback snapshot, and
+    every reviewer comment thread. Use it before revising: implement each open
+    comment, reply with reply_to_article_review_comment, then resubmit.
+    """
     async with database_session() as session:
         owner = current_mcp_reader_id()
         article = await ArticleRepository(session, owner).get_article_by_slug(slug)
@@ -394,7 +458,12 @@ async def get_article_review_context(slug: str) -> dict[str, Any]:
 async def reply_to_article_review_comment(
     comment_id: UUID, body: str
 ) -> dict[str, Any]:
-    """Explain how human feedback was implemented and mark it addressed."""
+    """Reply to one reviewer comment, recording how it was addressed.
+
+    Call after implementing that comment's change in the working article. Reply to
+    every open comment before resubmitting so the reviewer sees what changed per
+    item. Identify the comment by the comment_id from get_article_review_context.
+    """
     values = ArticleReviewReplyInput(body=body)
     async with database_session() as session:
         result = await ReviewRepository(
@@ -410,7 +479,13 @@ async def reply_to_article_review_comment(
 @mcp.tool()
 @trace_observation("mcp.tool.submit_article_for_review")
 async def submit_article_for_review(slug: str, content_hash: str) -> dict[str, Any]:
-    """Submit the exact working content hash for human review."""
+    """Submit the current working draft for human review — the publication gate.
+
+    Pass the slug and the contentHash returned by the most recent create/update
+    draft call (or by get_article_draft). The hash pins the exact content being
+    reviewed, so resubmit after any edit. You cannot publish; a human approves
+    from here.
+    """
     async with _repository() as repository:
         result = await repository.submit_for_review(slug, content_hash)
     update_current_observation(
@@ -423,7 +498,12 @@ async def submit_article_for_review(slug: str, content_hash: str) -> dict[str, A
 @mcp.tool()
 @trace_observation("mcp.tool.get_article_draft")
 async def get_article_draft(slug: str) -> dict[str, Any]:
-    """Fetch the complete current working article by slug."""
+    """Fetch the complete current WORKING draft by slug, including its contentHash.
+
+    Returns the working copy (which may differ from the published post) plus the
+    contentHash that submit_article_for_review requires. Use it before updating or
+    submitting so you work from the exact current content.
+    """
     async with _repository() as repository:
         result = await repository.get_article_by_slug(slug)
     update_current_observation(
@@ -436,7 +516,11 @@ async def get_article_draft(slug: str) -> dict[str, Any]:
 @mcp.tool()
 @trace_observation("mcp.tool.list_learning_paths")
 async def list_learning_paths() -> list[dict[str, Any]]:
-    """Inspect current curricula and categories before placing a new article."""
+    """List the owner's learning paths with their sections (categories).
+
+    Inspect existing curricula and section titles before creating a path or
+    placing an article, so new lessons land in the right section.
+    """
     async with database_session() as session:
         paths = await LearningPathRepository(
             session, current_mcp_reader_id()
@@ -448,7 +532,12 @@ async def list_learning_paths() -> list[dict[str, Any]]:
 @mcp.tool()
 @trace_observation("mcp.tool.create_learning_path")
 async def create_learning_path(path: LearningPathInput) -> dict[str, Any]:
-    """Create a new curated learning sequence."""
+    """Create a new curated learning path (an ordered reading sequence).
+
+    Add sections with add_learning_path_section, then place published articles
+    into a section with add_article_to_learning_path. Check list_learning_paths
+    first to avoid duplicating an existing path.
+    """
     async with database_session() as session:
         result = await LearningPathRepository(
             session, current_mcp_reader_id()
@@ -464,7 +553,12 @@ async def create_learning_path(path: LearningPathInput) -> dict[str, Any]:
 async def add_learning_path_section(
     path_slug: str, section: LearningPathSectionInput
 ) -> dict[str, Any]:
-    """Append a named category to an existing curriculum."""
+    """Append a named section (category) to an existing learning path.
+
+    Sections group a path's lessons; create the path first with
+    create_learning_path. Add articles to a section with
+    add_article_to_learning_path.
+    """
     async with database_session() as session:
         result = await LearningPathRepository(
             session, current_mcp_reader_id()
@@ -479,7 +573,12 @@ async def add_article_to_learning_path(
     section_title: str,
     lesson: LearningPathLessonInput,
 ) -> dict[str, Any]:
-    """Append a published article to one path category."""
+    """Add a PUBLISHED article as a lesson in one section of a learning path.
+
+    The article must already be published (draft or in-review articles cannot be
+    placed) and the target section must exist. Identify the section by its exact
+    title from list_learning_paths.
+    """
     async with database_session() as session:
         result = await LearningPathRepository(
             session, current_mcp_reader_id()
