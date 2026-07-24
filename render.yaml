@@ -4,7 +4,7 @@ services:
     runtime: docker
     plan: free
     dockerfilePath: ./infra/docker/api.Dockerfile
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: "off"
     healthCheckPath: /api/v1/health
     envVars:
       - key: BLOG_DATABASE_URL
