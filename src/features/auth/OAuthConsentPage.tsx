@@ -7,8 +7,9 @@ import {
 } from '../../shared/api/authApi';
 import { useAuth } from './AuthContext';
 
-const uuidPattern =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// Supabase issues opaque OAuth authorization identifiers (base32-style tokens),
+// not UUIDs. Accept URL-safe tokens (UUID strings still match this shape).
+const authorizationIdPattern = /^[A-Za-z0-9_-]{16,128}$/;
 
 const scopeLabels: Record<string, string> = {
   openid: 'Confirm your Blog Vault identity',
@@ -36,7 +37,7 @@ export function OAuthConsentPage() {
   const [decision, setDecision] = useState<'approve' | 'deny'>();
 
   useEffect(() => {
-    if (!uuidPattern.test(authorizationId)) {
+    if (!authorizationIdPattern.test(authorizationId)) {
       setError('This authorization request is missing or invalid.');
       return;
     }
