@@ -93,8 +93,25 @@ class ResearchSource(ApiModel):
 class InteractivePostInput(ArticleInputBase):
     """Research-backed post with semantic and animated representations."""
 
-    html: str = Field(min_length=1)
-    experience_html: str = Field(min_length=500, max_length=500_000)
+    html: str = Field(
+        min_length=1,
+        description=(
+            "Reading-mode article body as semantic contract-v2 HTML (never "
+            "Markdown); use var(--article-*) tokens for color."
+        ),
+    )
+    experience_html: str = Field(
+        min_length=500,
+        max_length=500_000,
+        description=(
+            "Complete self-contained Explore document. Requires "
+            '<html data-article-contract="v2">, [data-theme="light"] and '
+            '[data-theme="dark"] blocks defining all 22 --article-* tokens at '
+            "their exact brief fallback values, var(--article-*) for every "
+            "other color (no raw hex), prefers-reduced-motion support, at least "
+            "two <h2> sections, and no external scripts, stylesheets, or fonts."
+        ),
+    )
     research_sources: list[ResearchSource] = Field(min_length=3, max_length=12)
 
     @field_validator("experience_html")
