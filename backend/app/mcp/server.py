@@ -4,10 +4,12 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 
 from ..articles.authoring_policy import (
@@ -34,6 +36,29 @@ from ..security import current_mcp_reader_id
 from ..telemetry import trace_observation, update_current_observation
 from .auth import token_verifier
 
+# FastMCP defaults its bind host to 127.0.0.1, which auto-enables DNS-rebinding
+# protection allowing only localhost. Behind Render/Vercel the Host header is the
+# public domain, so the deployed host must be allow-listed explicitly or every
+# request is rejected with "Invalid Host header" (421).
+_mcp_resource_host = urlsplit(settings.mcp_resource_url).netloc
+_mcp_transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=[
+        _mcp_resource_host,
+        f"{_mcp_resource_host}:*",
+        "127.0.0.1:*",
+        "localhost:*",
+        "[::1]:*",
+    ],
+    allowed_origins=[
+        *settings.allowed_origins,
+        *settings.auth_allowed_origins,
+        "http://127.0.0.1:*",
+        "http://localhost:*",
+        "http://[::1]:*",
+    ],
+)
+
 mcp = FastMCP(
     "Blog Vault",
     instructions=(
@@ -53,6 +78,7 @@ mcp = FastMCP(
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
+    transport_security=_mcp_transport_security,
     token_verifier=token_verifier,
     auth=AuthSettings(
         issuer_url=AnyHttpUrl(settings.mcp_oauth_issuer),
