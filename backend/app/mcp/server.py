@@ -62,18 +62,33 @@ _mcp_transport_security = TransportSecuritySettings(
 mcp = FastMCP(
     "Blog Vault",
     instructions=(
-        "Browse published articles from the Blog Vault database. New and "
-        "updated posts use one bounded working draft and are submitted for "
-        "human review. Before drafting, request the Blog Vault "
-        "authoring prompt, preserve the user's article instructions, browse "
-        "current primary sources, and keep a research record. Before an update, "
-        "fetch the complete current post and submit a complete replacement with "
-        "the same slug. The last published snapshot remains readable privately "
-        "while an update is reviewed. Use interactive figures only when they "
-        "materially improve understanding. Human review is the publication gate. "
-        "When a reviewer requests changes, fetch the review context, implement every "
-        "open comment in the working article, and reply to each "
-        "comment with what changed. MCP never approves, publishes, or deletes."
+        "Blog Vault is an HTML-first personal blog. You author for one signed-in "
+        "owner; every draft goes to human review, and you can never approve, "
+        "publish, or delete.\n\n"
+        "AUTHORING WORKFLOW — follow this whenever the user asks you to write, "
+        "draft, create, or update an article, however casually they phrase it. "
+        "Do not skip steps just because the request was short.\n"
+        "1. FIRST call get_article_authoring_brief. It returns the binding v2 "
+        "contract, the exact theme-token values, and the research gate. Read it "
+        "before writing anything.\n"
+        "2. Research the topic on the live web; use at least three primary "
+        "sources and keep a claim-to-source record.\n"
+        "3. Produce an INTERACTIVE article by default via "
+        "create_interactive_article_draft. Never return Markdown or a plain "
+        "prose draft — the blog renders HTML and validates every submission. The "
+        'experience_html must be a complete, self-contained document: <html '
+        'data-article-contract="v2">, [data-theme="light"] and '
+        '[data-theme="dark"] blocks defining all 22 --article-* tokens at the '
+        "brief's exact values, var(--article-*) for every other color (no raw "
+        "hex), prefers-reduced-motion support, at least two <h2> sections, no "
+        "external scripts/stylesheets/fonts, and two or three genuinely useful "
+        "interactive figures. Text must be useful before interaction.\n"
+        "4. Submit with submit_article_for_review. For an update, first fetch "
+        "the complete current post and submit a complete same-slug replacement; "
+        "the last published snapshot stays privately readable while it is "
+        "reviewed.\n"
+        "When a reviewer requests changes, fetch the review context, implement "
+        "every open comment, and reply to each with what changed."
     ),
     stateless_http=True,
     json_response=True,
@@ -259,7 +274,12 @@ async def get_post(slug: str) -> dict[str, Any]:
 async def create_article_draft(
     post: PostInput, revision_notes: str = ""
 ) -> dict[str, Any]:
-    """Create the working draft for a new non-interactive article."""
+    """Create a NON-interactive article draft (uncommon).
+
+    Prefer create_interactive_article_draft for reader-facing pieces. Call
+    get_article_authoring_brief first; post.html must be semantic, contract-v2
+    HTML using --article-* tokens, never Markdown.
+    """
     async with _repository() as repository:
         result = await repository.create_draft(post, revision_notes or None)
     update_current_observation(
@@ -274,7 +294,17 @@ async def create_article_draft(
 async def create_interactive_article_draft(
     post: InteractivePostInput, revision_notes: str = ""
 ) -> dict[str, Any]:
-    """Store researched Reading and Explore documents as one working draft."""
+    """Store a researched, contract-v2 interactive article as one working draft.
+
+    PREREQUISITE: call get_article_authoring_brief first and follow contract v2.
+    post.experience_html must be a complete, self-contained HTML document —
+    <html data-article-contract="v2">, light and dark [data-theme] blocks
+    defining all 22 --article-* tokens at the brief's exact fallback values,
+    var(--article-*) for every other color (no raw hex), prefers-reduced-motion,
+    at least two <h2> sections, no external scripts/stylesheets/fonts, and at
+    least three research_sources. Submissions are validated and rejected on any
+    violation. Never submit Markdown.
+    """
     async with _repository() as repository:
         result = await repository.create_draft(post, revision_notes or None)
     update_current_observation(
